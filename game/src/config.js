@@ -21,9 +21,9 @@ export const FLIGHT = {
   accel: 9,              // m/s^2 toward throttle target
   stallSpeed: 24,        // below this, stall-lite sink kicks in
   gravitySink: 5.2,      // m/s baseline sink at cruise
-  pitchRate: 0.85,       // rad/s
-  rollRate: 1.7,         // rad/s
-  maxPitch: 0.42,
+  pitchResponse: 8.5,    // 1/s exponential rate: pitch eases to its target
+  rollResponse: 10,      // 1/s exponential rate: roll eases to its target
+  maxPitch: 0.5,
   maxRoll: 0.95,
   turnFactor: 0.55,      // heading change per radian of bank
 };

@@ -62,14 +62,19 @@ class Game {
     const p = this.plane;
     const F = FLIGHT;
 
-    // Controls -> attitude.
+    // Controls -> attitude. Attitude eases exponentially toward the
+    // input target: it answers immediately (no rate cap to wait for),
+    // settles without a snap, and auto-levels when the input is
+    // released because the target falls back to level flight.
     p.throttle = clamp(p.throttle + ctrl.throttle * dt * 0.55, 0, 1);
     const pitchInput = clamp(ctrl.pitch, -1, 1);
     const rollInput = clamp(ctrl.roll, -1, 1);
     const targetPitch = pitchInput * F.maxPitch;
     const targetRoll = rollInput * F.maxRoll;
-    p.pitch += clamp(targetPitch - p.pitch, -F.pitchRate * dt, F.pitchRate * dt);
-    p.roll += clamp(targetRoll - p.roll, -F.rollRate * dt, F.rollRate * dt);
+    const kp = 1 - Math.exp(-F.pitchResponse * dt);
+    const kr = 1 - Math.exp(-F.rollResponse * dt);
+    p.pitch += (targetPitch - p.pitch) * kp;
+    p.roll += (targetRoll - p.roll) * kr;
 
     // Speed chases the throttle setting.
     const targetSpeed = F.idleSpeed + p.throttle * (F.maxSpeed - F.idleSpeed);
@@ -82,7 +87,7 @@ class Game {
     // Vertical: pitch drives climb; lift offsets gravity; stall-lite.
     this.stalled = p.speed < F.stallSpeed;
     const lift = clamp((p.speed - 12) / (F.stallSpeed - 12), 0, 1) * F.gravitySink;
-    let vs = Math.sin(p.pitch) * p.speed * 0.92 + lift - F.gravitySink;
+    let vs = Math.sin(p.pitch) * p.speed * 1.0 + lift - F.gravitySink;
     if (this.stalled) vs -= (F.stallSpeed - p.speed) * 0.34; // mushy sink
     this.vs = vs;
 

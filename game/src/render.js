@@ -103,29 +103,52 @@ export class Renderer {
 
   drawSea(state) {
     const { ctx } = this;
-    // Sea plane: fill below horizon, then glitter lines + sun path.
-    const horizonY = H / 2 - Math.tan(this.cam.pitch) * FOCAL * 0.9;
-    const hy = clamp(horizonY, H * 0.2, H * 0.75);
-    const g = ctx.createLinearGradient(0, hy, 0, H);
-    g.addColorStop(0, '#39c2c9');
-    g.addColorStop(0.35, '#1595ad');
+    // The water layer is ANCHORED to the screen: its top edge (the
+    // horizon) sits at a fixed screen height, its colour gradient is
+    // defined over fixed screen rows, and its sparkle texture is a
+    // static screen-space pattern. Pitch, roll and heading never drag
+    // the sea around — only the world objects projected onto it move.
+    const hy = H * 0.5;
+    // Haze band: a pale blend straddling the horizon line, so distant
+    // objects melt into the waterline instead of crossing a hard edge.
+    const haze = ctx.createLinearGradient(0, hy - 46, 0, hy + 12);
+    haze.addColorStop(0, 'rgba(255, 226, 160, 0)');
+    haze.addColorStop(1, 'rgba(186, 233, 233, 0.55)');
+    ctx.fillStyle = haze;
+    ctx.fillRect(0, hy - 46, W, 58);
+    // Sea body: gradient anchored to fixed screen rows, so the colour
+    // bands can never slide up or down.
+    const g = ctx.createLinearGradient(0, H * 0.42, 0, H);
+    g.addColorStop(0, '#3ec6cd');
+    g.addColorStop(0.3, '#1b9db4');
+    g.addColorStop(0.65, '#0e7497');
     g.addColorStop(1, '#0a5f83');
     ctx.fillStyle = g;
     ctx.fillRect(0, hy, W, H - hy);
-    // Projected latitude lines give a sense of speed over the water.
-    ctx.strokeStyle = 'rgba(255,255,255,0.13)';
-    ctx.lineWidth = 1.5;
-    const pz = Math.floor(this.cam.z / 60) * 60;
-    for (let i = 0; i < 14; i++) {
-      const z = pz - i * 60;
-      const a = this.project(-900, 0, z), b = this.project(900, 0, z);
-      if (a && b) { ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); }
-    }
-    // Sun glitter path.
+    // Sun glitter path: a soft golden wedge, fixed in screen space.
     ctx.fillStyle = 'rgba(255,220,130,0.10)';
     ctx.beginPath();
-    ctx.moveTo(W * 0.22, hy); ctx.lineTo(W * 0.38, hy); ctx.lineTo(W * 0.52, H); ctx.lineTo(W * 0.05, H);
+    ctx.moveTo(W * 0.24, hy); ctx.lineTo(W * 0.40, hy); ctx.lineTo(W * 0.54, H); ctx.lineTo(W * 0.06, H);
     ctx.closePath(); ctx.fill();
+    // Static sparkle texture: deterministic flecks placed purely from
+    // screen coordinates (a hash of the cell), growing denser and
+    // larger toward the bottom of the frame. Nothing here reads the
+    // camera or the clock, so the pattern never moves at all.
+    const cell = 46;
+    for (let row = 0; row * cell < H - hy; row++) {
+      const y = hy + 14 + row * cell;
+      if (y > H - 6) break;
+      const t = (y - hy) / (H - hy); // 0 at the horizon, 1 at the bottom
+      const n = 3 + Math.floor(t * 9);
+      for (let i = 0; i < n; i++) {
+        const h1 = Math.sin(row * 127.1 + i * 311.7) * 43758.5453;
+        const fx = (h1 - Math.floor(h1)) * W;
+        const h2 = Math.sin(row * 269.5 + i * 183.3) * 28001.8384;
+        const fw = 5 + (h2 - Math.floor(h2)) * (10 + t * 26);
+        ctx.fillStyle = `rgba(255,255,255,${0.05 + t * 0.13})`;
+        ctx.beginPath(); ctx.ellipse(fx, y, fw, 1.4 + t * 1.6, 0, 0, Math.PI * 2); ctx.fill();
+      }
+    }
   }
 
   poly(points, fill, stroke, lw = 2) {
@@ -354,101 +377,118 @@ export class Renderer {
     }
   }
 
-  // The seaplane, drawn in screen space, banking/pitching with the plane.
-  // A polished rear-view portrait: shaded fuselage with a glossy canopy,
-  // a sunlit two-panel wing with dihedral and nav lights, struts all
-  // round, twin floats, and a spinning prop disc at the nose. Golden-hour
-  // light comes from ahead-left, so left surfaces run warmer/brighter.
+  // The seaplane, drawn in screen space, banking/pitching with the
+  // plane. TOTAL REDESIGN (revision round 3): a sleek aerobatic
+  // seaplane in deep teal + white with orange accents — a rounded,
+  // volumetric fuselage, a big glossy canopy, a mid wing with rounded
+  // orange-tipped panels, streamlined floats, a sunburst tail fin and
+  // a blurred prop disc at the nose. Golden-hour light comes from
+  // ahead-left: left surfaces run bright, right surfaces fall into
+  // deep teal shade. The portrait is drawn about 30% larger than the
+  // previous aircraft — it is the hero of every frame.
   drawPlane(state) {
     const { ctx } = this;
     const { plane } = state;
-    const cx = W / 2 + plane.roll * -34;
-    const cy = H * 0.56 + plane.pitch * 46;
+    const cx = W / 2 + plane.roll * -36;
+    const cy = H * 0.565 + plane.pitch * 56;
     ctx.save();
     ctx.translate(cx, cy);
 
-    // --- Soft shadow on the water below the plane (not banked with it).
-    // Higher altitude -> smaller, fainter shadow; plus a warm shimmer of
-    // reflected sunset under the fuselage.
+    // --- Soft shadow on the water below the plane (not banked with
+    // it). Higher altitude -> smaller, fainter shadow, plus a warm
+    // shimmer of reflected sunset under the fuselage. ---
     const altT = clamp((plane.y - 6) / 130, 0, 1); // 0 = low, 1 = high
-    const shScale = 1.18 - altT * 0.48;
+    const shScale = (1.18 - altT * 0.48) * 1.3;
     const shAlpha = 0.30 - altT * 0.18;
-    ctx.fillStyle = `rgba(4, 40, 55, ${shAlpha * 0.55})`;
-    ctx.beginPath(); ctx.ellipse(0, 60, 102 * shScale, 16 * shScale, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = `rgba(4, 40, 55, ${shAlpha})`;
-    ctx.beginPath(); ctx.ellipse(0, 59, 72 * shScale, 10.5 * shScale, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(3, 38, 44, ${shAlpha * 0.55})`;
+    ctx.beginPath(); ctx.ellipse(0, 79, 106 * shScale, 16 * shScale, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(3, 38, 44, ${shAlpha})`;
+    ctx.beginPath(); ctx.ellipse(0, 78, 76 * shScale, 10.5 * shScale, 0, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = 'rgba(255, 205, 110, 0.10)';
-    ctx.beginPath(); ctx.ellipse(0, 57, 30 * shScale, 5.5 * shScale, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(0, 76, 33 * shScale, 5.5 * shScale, 0, 0, Math.PI * 2); ctx.fill();
 
     ctx.rotate(plane.roll * 0.75);
+    ctx.scale(1.3, 1.3);
 
-    // --- Twin floats on splayed struts, with a spreader bar between. ---
-    ctx.strokeStyle = '#54606c'; ctx.lineWidth = 3; ctx.lineCap = 'round';
-    ctx.beginPath(); ctx.moveTo(-30, 35); ctx.lineTo(30, 35); ctx.stroke(); // spreader bar
-    for (const fx of [-30, 30]) {
-      ctx.strokeStyle = '#54606c'; ctx.lineWidth = 3;
-      ctx.beginPath(); ctx.moveTo(fx * 0.42, 14); ctx.lineTo(fx - 1, 30); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(fx * 0.5, 24); ctx.lineTo(fx + 3, 31); ctx.stroke();
-      ctx.strokeStyle = 'rgba(230,238,245,0.7)'; ctx.lineWidth = 1.2;
-      ctx.beginPath(); ctx.moveTo(fx * 0.42, 14); ctx.lineTo(fx - 1, 30); ctx.stroke();
-      // Float body: shaded pontoon with a red stripe and a step notch.
-      const fg = ctx.createLinearGradient(0, 28, 0, 44);
-      fg.addColorStop(0, '#f8fafc'); fg.addColorStop(0.55, '#dde5ec'); fg.addColorStop(1, '#aeb9c6');
-      ctx.fillStyle = fg;
-      ctx.beginPath();
-      ctx.moveTo(fx - 10, 30);
-      ctx.quadraticCurveTo(fx, 27.5, fx + 11, 29.5);
-      ctx.quadraticCurveTo(fx + 14, 30.5, fx + 13.5, 35);
-      ctx.quadraticCurveTo(fx + 12, 41, fx + 5, 42.5);
-      ctx.lineTo(fx + 1, 40.5); // step notch
-      ctx.lineTo(fx - 3, 42.5);
-      ctx.quadraticCurveTo(fx - 9, 42, fx - 10.5, 36);
-      ctx.quadraticCurveTo(fx - 11, 32, fx - 10, 30);
-      ctx.closePath(); ctx.fill();
-      ctx.strokeStyle = '#6d7885'; ctx.lineWidth = 1.8; ctx.stroke();
-      ctx.fillStyle = '#d8433c';
-      ctx.fillRect(fx - 9.5, 33.5, 21, 3.2);
+    // --- Twin floats on splayed struts, with a spreader bar. ---
+    ctx.strokeStyle = '#22444a'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(-31, 37); ctx.lineTo(31, 37); ctx.stroke(); // spreader bar
+    for (const fx of [-31, 31]) {
+      ctx.strokeStyle = '#22444a'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(fx * 0.34, 15); ctx.lineTo(fx - 2, 31); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(fx * 0.45, 25); ctx.lineTo(fx + 4, 32); ctx.stroke();
+      ctx.strokeStyle = 'rgba(220,245,240,0.65)'; ctx.lineWidth = 1.1;
+      ctx.beginPath(); ctx.moveTo(fx * 0.34, 15); ctx.lineTo(fx - 2, 31); ctx.stroke();
+      // Float body: a streamlined pontoon, white deck shading into a
+      // deep teal keel, with an orange stripe along the waterline.
+      const floatPath = () => {
+        ctx.beginPath();
+        ctx.moveTo(fx - 13, 33);
+        ctx.quadraticCurveTo(fx - 4, 29.5, fx + 6, 30.5);
+        ctx.quadraticCurveTo(fx + 14, 31.5, fx + 14.5, 36);
+        ctx.quadraticCurveTo(fx + 14, 41.5, fx + 6, 43);
+        ctx.lineTo(fx - 6, 43.5);
+        ctx.quadraticCurveTo(fx - 13, 42.5, fx - 13.8, 37);
+        ctx.quadraticCurveTo(fx - 14, 34.5, fx - 13, 33);
+        ctx.closePath();
+      };
+      const fg = ctx.createLinearGradient(0, 29, 0, 44);
+      fg.addColorStop(0, '#ffffff'); fg.addColorStop(0.45, '#b9e6de');
+      fg.addColorStop(0.8, '#2a9d8f'); fg.addColorStop(1, '#0b5a54');
+      floatPath(); ctx.fillStyle = fg; ctx.fill();
+      ctx.save(); floatPath(); ctx.clip();
+      ctx.fillStyle = '#ff7a1a'; ctx.fillRect(fx - 14, 35.5, 29, 3);
+      ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.fillRect(fx - 14, 31, 29, 1.6);
+      ctx.restore();
+      floatPath(); ctx.strokeStyle = '#0a3f3c'; ctx.lineWidth = 1.8; ctx.stroke();
     }
+
     // --- Wing struts: lower fuselage up to the wing underside. ---
-    ctx.strokeStyle = '#6e1f1a'; ctx.lineWidth = 3;
     for (const sx of [-1, 1]) {
-      ctx.beginPath(); ctx.moveTo(sx * 12, 20); ctx.lineTo(sx * 50, 7); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(sx * 14, 24); ctx.lineTo(sx * 58, 10); ctx.stroke();
-    }
-    ctx.strokeStyle = 'rgba(255,180,150,0.45)'; ctx.lineWidth = 1.1;
-    for (const sx of [-1, 1]) {
-      ctx.beginPath(); ctx.moveTo(sx * 12, 19); ctx.lineTo(sx * 50, 6); ctx.stroke();
+      ctx.strokeStyle = '#07332f'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(sx * 11, 19); ctx.lineTo(sx * 52, 3); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(sx * 13, 24); ctx.lineTo(sx * 60, 6); ctx.stroke();
+      ctx.strokeStyle = 'rgba(190, 240, 230, 0.4)'; ctx.lineWidth = 1.1;
+      ctx.beginPath(); ctx.moveTo(sx * 11, 18); ctx.lineTo(sx * 52, 2); ctx.stroke();
     }
 
-    // --- Main wing: two panels with a hint of dihedral, sunlit on the
-    // left, deeper shade on the right, gold tips and nav lights. ---
+    // --- Main wing: two panels with rounded tips. The left panel is
+    // sunlit teal, the right falls into deep shade; both carry a white
+    // leading edge, an orange tip cap and a glowing nav light. ---
     const wingPanel = (sx, c0, c1) => {
       const g = ctx.createLinearGradient(0, 0, sx * 118, 0);
       g.addColorStop(0, c0); g.addColorStop(1, c1);
-      ctx.fillStyle = g;
-      ctx.beginPath();
-      ctx.moveTo(sx * 3, -4); ctx.lineTo(sx * 114, -13); ctx.lineTo(sx * 104, 4); ctx.lineTo(sx * 3, 9);
-      ctx.closePath(); ctx.fill();
-      ctx.strokeStyle = '#8f231d'; ctx.lineWidth = 2; ctx.stroke();
-      // Leading-edge sheen.
-      ctx.strokeStyle = 'rgba(255, 222, 160, 0.55)'; ctx.lineWidth = 1.6;
-      ctx.beginPath(); ctx.moveTo(sx * 5, -2.6); ctx.lineTo(sx * 110, -11.4); ctx.stroke();
-      // Aileron + flap separation lines.
-      ctx.strokeStyle = 'rgba(120, 22, 16, 0.55)'; ctx.lineWidth = 1.4;
-      ctx.beginPath(); ctx.moveTo(sx * 88, -10.4); ctx.lineTo(sx * 84, 2.6); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(sx * 34, -5.4); ctx.lineTo(sx * 33, 7.6); ctx.stroke();
-      // Gold tip band.
-      ctx.fillStyle = '#ffd257';
-      ctx.beginPath();
-      ctx.moveTo(sx * 114, -13); ctx.lineTo(sx * 99, -11.6); ctx.lineTo(sx * 91, 2.2); ctx.lineTo(sx * 104, 4);
-      ctx.closePath(); ctx.fill();
-      ctx.strokeStyle = '#a87b12'; ctx.lineWidth = 1.4; ctx.stroke();
+      const path = () => {
+        ctx.beginPath();
+        ctx.moveTo(sx * 2, -6);
+        ctx.lineTo(sx * 94, -14);
+        ctx.quadraticCurveTo(sx * 114, -15.5, sx * 117, -7.5); // rounded tip
+        ctx.quadraticCurveTo(sx * 115, 0.5, sx * 96, 2.5);
+        ctx.lineTo(sx * 2, 8);
+        ctx.closePath();
+      };
+      path(); ctx.fillStyle = g; ctx.fill();
+      // Orange tip cap.
+      ctx.save(); path(); ctx.clip();
+      const tg = ctx.createLinearGradient(sx * 92, 0, sx * 118, 0);
+      tg.addColorStop(0, '#ffa53d'); tg.addColorStop(1, '#ff7a1a');
+      ctx.fillStyle = tg; ctx.fillRect(sx > 0 ? 92 : -118, -17, 26, 22);
+      ctx.restore();
+      path(); ctx.strokeStyle = '#063f3c'; ctx.lineWidth = 2; ctx.stroke();
+      // White leading-edge sheen.
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)'; ctx.lineWidth = 1.8;
+      ctx.beginPath(); ctx.moveTo(sx * 4, -4.4); ctx.lineTo(sx * 94, -12.4);
+      ctx.quadraticCurveTo(sx * 110, -13.6, sx * 114, -8.6); ctx.stroke();
+      // Flap + aileron separation lines.
+      ctx.strokeStyle = 'rgba(4, 45, 42, 0.5)'; ctx.lineWidth = 1.3;
+      ctx.beginPath(); ctx.moveTo(sx * 84, -11.6); ctx.lineTo(sx * 81, 1.8); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(sx * 33, -6.2); ctx.lineTo(sx * 32, 7.4); ctx.stroke();
     };
-    wingPanel(-1, '#f26a5e', '#e14a40');
-    wingPanel(1, '#e14a40', '#c93327');
+    wingPanel(-1, '#3ecfb9', '#0d7a70');
+    wingPanel(1, '#0d7a70', '#053f3b');
     // Nav lights: red on the left tip, green on the right, soft glow.
     for (const [sx, col, glow] of [[-1, '#ff5040', 'rgba(255, 64, 48, 0.45)'], [1, '#3dff8e', 'rgba(50, 255, 140, 0.45)']]) {
-      const nx = sx * 115, ny = -6;
+      const nx = sx * 116, ny = -7;
       const rg = ctx.createRadialGradient(nx, ny, 0.5, nx, ny, 10);
       rg.addColorStop(0, glow); rg.addColorStop(1, 'rgba(0,0,0,0)');
       ctx.fillStyle = rg;
@@ -459,147 +499,195 @@ export class Renderer {
       ctx.beginPath(); ctx.arc(nx, ny, 1.1, 0, Math.PI * 2); ctx.fill();
     }
 
-    // --- Tailplane: same livery treatment, smaller, gold tips. ---
+    // --- Tailplane: same treatment, smaller, orange tips. ---
     for (const sx of [-1, 1]) {
-      const g = ctx.createLinearGradient(0, 0, sx * 46, 0);
-      g.addColorStop(0, '#ef5a4e'); g.addColorStop(1, '#d63c33');
+      const g = ctx.createLinearGradient(0, 0, sx * 48, 0);
+      g.addColorStop(0, sx < 0 ? '#35c4b1' : '#0d7a70');
+      g.addColorStop(1, sx < 0 ? '#0d7a70' : '#053f3b');
       ctx.fillStyle = g;
       ctx.beginPath();
-      ctx.moveTo(sx * 2, -43); ctx.lineTo(sx * 45, -46); ctx.lineTo(sx * 40, -35); ctx.lineTo(sx * 2, -33);
+      ctx.moveTo(sx * 2, -44); ctx.lineTo(sx * 40, -47);
+      ctx.quadraticCurveTo(sx * 47, -46.5, sx * 46, -41);
+      ctx.quadraticCurveTo(sx * 44, -36.5, sx * 38, -35.5);
+      ctx.lineTo(sx * 2, -34);
       ctx.closePath(); ctx.fill();
-      ctx.strokeStyle = '#8f231d'; ctx.lineWidth = 1.6; ctx.stroke();
-      ctx.fillStyle = '#ffd257';
+      ctx.fillStyle = '#ff7a1a';
       ctx.beginPath();
-      ctx.moveTo(sx * 45, -46); ctx.lineTo(sx * 37, -45.2); ctx.lineTo(sx * 33.5, -35.8); ctx.lineTo(sx * 40, -35);
+      ctx.moveTo(sx * 40, -47); ctx.quadraticCurveTo(sx * 47, -46.5, sx * 46, -41);
+      ctx.quadraticCurveTo(sx * 44, -36.5, sx * 38, -35.5); ctx.lineTo(sx * 36, -46.4);
       ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = '#063f3c'; ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(sx * 2, -44); ctx.lineTo(sx * 40, -47);
+      ctx.quadraticCurveTo(sx * 47, -46.5, sx * 46, -41);
+      ctx.quadraticCurveTo(sx * 44, -36.5, sx * 38, -35.5);
+      ctx.lineTo(sx * 2, -34);
+      ctx.closePath(); ctx.stroke();
     }
-    ctx.strokeStyle = 'rgba(120, 22, 16, 0.5)'; ctx.lineWidth = 1.2;
-    ctx.beginPath(); ctx.moveTo(-38, -40.5); ctx.lineTo(38, -40.5); ctx.stroke();
-    // --- Fuselage (seen from behind/above): tapered body going up-screen,
-    // lit warm from the left, belly falling into shade at the bottom. ---
+    ctx.strokeStyle = 'rgba(4, 45, 42, 0.5)'; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(-39, -41); ctx.lineTo(39, -41); ctx.stroke(); // elevator line
+
+    // --- Fuselage: a rounded, volumetric body — white sunlit deck
+    // flowing into teal flanks and a deep teal tail cone, with a warm
+    // highlight on the left and shade creeping up the right. ---
     const fuselagePath = () => {
       ctx.beginPath();
-      ctx.moveTo(-10, -64);
-      ctx.quadraticCurveTo(-17, -34, -18, -6);
-      ctx.quadraticCurveTo(-19, 16, -13, 30);
-      ctx.quadraticCurveTo(-8, 38, 0, 39);
-      ctx.quadraticCurveTo(8, 38, 13, 30);
-      ctx.quadraticCurveTo(19, 16, 18, -6);
-      ctx.quadraticCurveTo(17, -34, 10, -64);
-      ctx.quadraticCurveTo(0, -70, -10, -64);
+      ctx.moveTo(-9, -84);
+      ctx.quadraticCurveTo(-15.5, -54, -17.5, -18);
+      ctx.quadraticCurveTo(-18.5, 12, -12.5, 31);
+      ctx.quadraticCurveTo(-7.5, 41.5, 0, 42.5);
+      ctx.quadraticCurveTo(7.5, 41.5, 12.5, 31);
+      ctx.quadraticCurveTo(18.5, 12, 17.5, -18);
+      ctx.quadraticCurveTo(15.5, -54, 9, -84);
+      ctx.quadraticCurveTo(0, -90.5, -9, -84);
       ctx.closePath();
     };
-    const body = ctx.createLinearGradient(0, -66, 0, 40);
-    body.addColorStop(0, '#ffffff'); body.addColorStop(0.45, '#f0f3f6');
-    body.addColorStop(0.8, '#ccd6df'); body.addColorStop(1, '#a7b4c2');
-    fuselagePath();
-    ctx.fillStyle = body; ctx.fill();
-    // Sun-side warmth on the left flank, cool shade creeping up the right.
+    const bodyGrad = ctx.createLinearGradient(0, -88, 0, 44);
+    bodyGrad.addColorStop(0, '#ffffff');
+    bodyGrad.addColorStop(0.34, '#e9f6f2');
+    bodyGrad.addColorStop(0.62, '#63bdae');
+    bodyGrad.addColorStop(0.85, '#0d7a70');
+    bodyGrad.addColorStop(1, '#07332f');
+    fuselagePath(); ctx.fillStyle = bodyGrad; ctx.fill();
     ctx.save();
     fuselagePath(); ctx.clip();
-    const warm = ctx.createLinearGradient(-19, 0, 4, 0);
-    warm.addColorStop(0, 'rgba(255, 205, 120, 0.38)'); warm.addColorStop(1, 'rgba(255, 205, 120, 0)');
-    ctx.fillStyle = warm; ctx.fillRect(-19, -70, 24, 110);
-    const cool = ctx.createLinearGradient(5, 0, 19, 0);
-    cool.addColorStop(0, 'rgba(45, 70, 100, 0)'); cool.addColorStop(1, 'rgba(45, 70, 100, 0.20)');
-    ctx.fillStyle = cool; ctx.fillRect(5, -70, 14, 110);
-    // Red cheatline with a gold pinstripe under it.
-    ctx.fillStyle = '#d8433c'; ctx.fillRect(-19, 5, 38, 7);
-    ctx.fillStyle = 'rgba(255, 210, 87, 0.95)'; ctx.fillRect(-19, 12, 38, 2);
+    // Warm sun-side highlight on the left flank.
+    const warm = ctx.createLinearGradient(-19, 0, 3, 0);
+    warm.addColorStop(0, 'rgba(255, 224, 160, 0.50)'); warm.addColorStop(1, 'rgba(255, 224, 160, 0)');
+    ctx.fillStyle = warm; ctx.fillRect(-19, -90, 23, 134);
+    // Cool deep shade on the right flank.
+    const cool = ctx.createLinearGradient(4, 0, 19, 0);
+    cool.addColorStop(0, 'rgba(3, 35, 45, 0)'); cool.addColorStop(1, 'rgba(3, 35, 45, 0.38)');
+    ctx.fillStyle = cool; ctx.fillRect(4, -90, 15, 134);
+    // A bright spine highlight down the deck.
+    const spine = ctx.createLinearGradient(-5, 0, 5, 0);
+    spine.addColorStop(0, 'rgba(255,255,255,0)');
+    spine.addColorStop(0.5, 'rgba(255,255,255,0.55)');
+    spine.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = spine; ctx.fillRect(-5, -90, 10, 100);
+    // Sweeping orange cheatline along the body.
+    const cheat = ctx.createLinearGradient(-19, 0, 19, 0);
+    cheat.addColorStop(0, '#ffa53d'); cheat.addColorStop(0.55, '#ff7a1a'); cheat.addColorStop(1, '#e85d04');
+    ctx.fillStyle = cheat;
+    ctx.beginPath();
+    ctx.moveTo(-19, 1); ctx.quadraticCurveTo(0, 8, 19, -1);
+    ctx.lineTo(19, 7); ctx.quadraticCurveTo(0, 16, -19, 9);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.beginPath();
+    ctx.moveTo(-19, 9.5); ctx.quadraticCurveTo(0, 16.5, 19, 7.5);
+    ctx.lineTo(19, 9.5); ctx.quadraticCurveTo(0, 18.5, -19, 11.5);
+    ctx.closePath(); ctx.fill();
     ctx.restore();
-    fuselagePath();
-    ctx.strokeStyle = '#71808e'; ctx.lineWidth = 2; ctx.stroke();
+    fuselagePath(); ctx.strokeStyle = '#0a4a45'; ctx.lineWidth = 2; ctx.stroke();
     // Panel lines across the body.
-    ctx.strokeStyle = 'rgba(95, 110, 125, 0.35)'; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(-17.5, -8); ctx.quadraticCurveTo(0, -5.5, 17.5, -8); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(-16.5, 20); ctx.quadraticCurveTo(0, 22.5, 16.5, 20); ctx.stroke();
+    ctx.strokeStyle = 'rgba(6, 60, 56, 0.30)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(-17.5, -12); ctx.quadraticCurveTo(0, -9.5, 17.5, -12); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-15.5, 24); ctx.quadraticCurveTo(0, 26.5, 15.5, 24); ctx.stroke();
     // Exhaust stubs low on each flank.
     for (const sx of [-1, 1]) {
-      ctx.fillStyle = '#3a3f45';
+      ctx.fillStyle = '#22333a';
       ctx.beginPath();
-      ctx.moveTo(sx * 12.5, 15); ctx.lineTo(sx * 18.5, 17); ctx.lineTo(sx * 17.5, 21.5); ctx.lineTo(sx * 11.5, 19.5);
+      ctx.moveTo(sx * 12, 16); ctx.lineTo(sx * 18.5, 18.5); ctx.lineTo(sx * 17.5, 23); ctx.lineTo(sx * 11, 20.5);
       ctx.closePath(); ctx.fill();
       ctx.fillStyle = 'rgba(255,255,255,0.25)';
-      ctx.fillRect(sx > 0 ? 12.5 : -18.5, 15, 6, 1.4);
+      ctx.fillRect(sx > 0 ? 12 : -18.5, 16, 6.5, 1.4);
     }
     // Tail light at the very bottom of the cone.
     ctx.fillStyle = 'rgba(255,255,255,0.35)';
-    ctx.beginPath(); ctx.arc(0, 37.5, 3.4, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(0, 40.5, 3.4, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = '#ffffff';
-    ctx.beginPath(); ctx.arc(0, 37.5, 1.7, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(0, 40.5, 1.7, 0, Math.PI * 2); ctx.fill();
 
-    // --- Vertical fin: gold with a red band, rudder hinge line, and an
-    // antenna wire running forward to a mast above the canopy. ---
+    // --- Vertical fin: white, with a bold orange sunburst and a teal
+    // tip; rudder hinge line; antenna wire to a mast over the canopy. ---
     const finPath = () => {
       ctx.beginPath();
-      ctx.moveTo(-4.5, -62);
-      ctx.quadraticCurveTo(-4, -82, 0.5, -95);
-      ctx.lineTo(5.5, -93);
-      ctx.quadraticCurveTo(7.5, -78, 7, -63);
+      ctx.moveTo(-5, -60);
+      ctx.quadraticCurveTo(-4.5, -80, 0.5, -96);
+      ctx.lineTo(6, -93.5);
+      ctx.quadraticCurveTo(8.5, -77, 7.5, -61);
       ctx.closePath();
     };
-    const finGrad = ctx.createLinearGradient(0, -95, 0, -62);
-    finGrad.addColorStop(0, '#ffdd66'); finGrad.addColorStop(1, '#f0ae1d');
+    const finGrad = ctx.createLinearGradient(0, -96, 0, -60);
+    finGrad.addColorStop(0, '#ffffff'); finGrad.addColorStop(1, '#cfe8e2');
     finPath(); ctx.fillStyle = finGrad; ctx.fill();
     ctx.save();
     finPath(); ctx.clip();
-    ctx.fillStyle = '#d8433c'; ctx.fillRect(-5, -82, 13, 6.5);
+    // Sunburst: three orange rays fanning from the fin's base.
+    ctx.fillStyle = '#ff7a1a';
+    for (const [x0, x1] of [[-6, -1], [0.5, 3.5], [6, 10]]) {
+      ctx.beginPath();
+      ctx.moveTo(-2, -58); ctx.lineTo(x0, -97); ctx.lineTo(x1, -97); ctx.closePath(); ctx.fill();
+    }
+    ctx.fillStyle = '#0d7a70'; ctx.fillRect(-6, -97, 15, 4.5); // teal tip cap
     ctx.restore();
-    finPath(); ctx.strokeStyle = '#a87b12'; ctx.lineWidth = 1.8; ctx.stroke();
-    ctx.strokeStyle = 'rgba(140, 95, 10, 0.55)'; ctx.lineWidth = 1.1;
-    ctx.beginPath(); ctx.moveTo(3.4, -92); ctx.lineTo(5.2, -65); ctx.stroke();
-    ctx.strokeStyle = 'rgba(30, 40, 50, 0.55)'; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(1, -93); ctx.lineTo(-1.5, -46); ctx.stroke(); // antenna wire
-    ctx.strokeStyle = '#54606c'; ctx.lineWidth = 1.6;
-    ctx.beginPath(); ctx.moveTo(-1.5, -46); ctx.lineTo(-1.5, -40); ctx.stroke(); // mast
+    finPath(); ctx.strokeStyle = '#0a4a45'; ctx.lineWidth = 1.8; ctx.stroke();
+    ctx.strokeStyle = 'rgba(6, 60, 56, 0.5)'; ctx.lineWidth = 1.1;
+    ctx.beginPath(); ctx.moveTo(4.2, -93); ctx.lineTo(6, -63); ctx.stroke(); // rudder hinge
+    ctx.strokeStyle = 'rgba(20, 35, 40, 0.55)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(1, -94.5); ctx.lineTo(-1.5, -50); ctx.stroke(); // antenna wire
+    ctx.strokeStyle = '#22444a'; ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.moveTo(-1.5, -50); ctx.lineTo(-1.5, -44); ctx.stroke(); // mast
 
-    // --- Cockpit canopy: deep blue glass, glossy sun glint, frame post. ---
-    ctx.fillStyle = '#12242f';
-    ctx.beginPath(); ctx.ellipse(0, -27, 10.5, 18.5, 0, 0, Math.PI * 2); ctx.fill();
-    const glass = ctx.createLinearGradient(0, -45, 0, -9);
-    glass.addColorStop(0, '#8fd8ff'); glass.addColorStop(0.45, '#2e6ea8'); glass.addColorStop(1, '#14324e');
+    // --- Cockpit canopy: a big glossy bubble of blue-teal glass with
+    // a strong sun glint, framed in deep teal. ---
+    ctx.fillStyle = '#06222b';
+    ctx.beginPath(); ctx.ellipse(0, -31, 13, 23.5, 0, 0, Math.PI * 2); ctx.fill();
+    const glass = ctx.createLinearGradient(0, -53, 0, -9);
+    glass.addColorStop(0, '#d9fbff'); glass.addColorStop(0.4, '#39a7c9'); glass.addColorStop(1, '#0a3d5c');
     ctx.fillStyle = glass;
-    ctx.beginPath(); ctx.ellipse(0, -27, 8.6, 16.2, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = 'rgba(255,255,255,0.92)';
-    ctx.beginPath(); ctx.ellipse(-3.4, -35, 2.9, 8, -0.25, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(0, -31, 11.2, 21, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.95)';
+    ctx.beginPath(); ctx.ellipse(-4.2, -39.5, 3.2, 9.5, -0.28, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = 'rgba(255,255,255,0.45)';
-    ctx.beginPath(); ctx.ellipse(3.4, -19, 1.5, 4.2, 0.15, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = 'rgba(10, 22, 32, 0.4)'; ctx.lineWidth = 1.4;
-    ctx.beginPath(); ctx.moveTo(0, -42.5); ctx.lineTo(0, -11.5); ctx.stroke();
-    ctx.strokeStyle = '#12242f'; ctx.lineWidth = 1.8;
-    ctx.beginPath(); ctx.ellipse(0, -27, 10.5, 18.5, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(4.2, -21, 1.7, 4.6, 0.18, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(6, 30, 40, 0.45)'; ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.moveTo(0, -50.5); ctx.lineTo(0, -12); ctx.stroke();
+    ctx.strokeStyle = '#06222b'; ctx.lineWidth = 1.8;
+    ctx.beginPath(); ctx.ellipse(0, -31, 13, 23.5, 0, 0, Math.PI * 2); ctx.stroke();
+    // Orange brow stripe on the deck between canopy and prop.
+    ctx.fillStyle = '#ff7a1a';
+    ctx.beginPath();
+    ctx.moveTo(-7.5, -60); ctx.quadraticCurveTo(0, -57.5, 7.5, -60);
+    ctx.lineTo(7, -55); ctx.quadraticCurveTo(0, -52.5, -7, -55);
+    ctx.closePath(); ctx.fill();
 
-    // --- Propeller at the nose: translucent blurred disc, three blade
-    // streaks sweeping with sim time, gold blade tips, shiny spinner. ---
+    // --- Propeller at the nose: a translucent blurred disc, three
+    // blade streaks with orange tips sweeping with sim time, and a
+    // glossy orange spinner. ---
     ctx.save();
-    ctx.translate(0, -70); ctx.scale(1, 7 / 36);
-    const disc = ctx.createRadialGradient(0, 0, 2, 0, 0, 36);
-    disc.addColorStop(0, 'rgba(28, 32, 38, 0.10)');
-    disc.addColorStop(0.72, 'rgba(28, 32, 38, 0.05)');
-    disc.addColorStop(0.95, 'rgba(28, 32, 38, 0.30)');
-    disc.addColorStop(1, 'rgba(28, 32, 38, 0)');
+    ctx.translate(0, -90); ctx.scale(1, 7 / 34);
+    const disc = ctx.createRadialGradient(0, 0, 2, 0, 0, 34);
+    disc.addColorStop(0, 'rgba(20, 30, 34, 0.08)');
+    disc.addColorStop(0.72, 'rgba(20, 30, 34, 0.05)');
+    disc.addColorStop(0.95, 'rgba(20, 30, 34, 0.30)');
+    disc.addColorStop(1, 'rgba(20, 30, 34, 0)');
     ctx.fillStyle = disc;
-    ctx.beginPath(); ctx.arc(0, 0, 36, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(0, 0, 34, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
     const propA = state.time * 26;
     for (let k = 0; k < 3; k++) {
       const a = propA + (k * Math.PI * 2) / 3;
-      const bx = Math.cos(a) * 33, by = -70 + Math.sin(a) * 6.2;
-      ctx.strokeStyle = 'rgba(22, 25, 30, 0.5)'; ctx.lineWidth = 3.4; ctx.lineCap = 'round';
-      ctx.beginPath(); ctx.moveTo(0, -70); ctx.lineTo(bx, by); ctx.stroke();
-      ctx.fillStyle = '#ffd257';
-      ctx.beginPath(); ctx.arc(bx, by, 2.1, 0, Math.PI * 2); ctx.fill();
+      const bx = Math.cos(a) * 31, by = -90 + Math.sin(a) * 5.9;
+      ctx.strokeStyle = 'rgba(15, 22, 26, 0.52)'; ctx.lineWidth = 3.4; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(0, -90); ctx.lineTo(bx, by); ctx.stroke();
+      ctx.fillStyle = '#ff7a1a';
+      ctx.beginPath(); ctx.arc(bx, by, 2.2, 0, Math.PI * 2); ctx.fill();
     }
-    ctx.strokeStyle = 'rgba(25, 28, 34, 0.38)'; ctx.lineWidth = 1.8;
-    ctx.beginPath(); ctx.ellipse(0, -70, 35, 6.6, 0, 0, Math.PI * 2); ctx.stroke();
-    const spinner = ctx.createLinearGradient(-5, -74, 5, -66);
-    spinner.addColorStop(0, '#fdfefe'); spinner.addColorStop(1, '#8d9aa8');
+    ctx.strokeStyle = 'rgba(15, 22, 26, 0.36)'; ctx.lineWidth = 1.8;
+    ctx.beginPath(); ctx.ellipse(0, -90, 33, 6.4, 0, 0, Math.PI * 2); ctx.stroke();
+    const spinner = ctx.createLinearGradient(-5, -94, 5, -86);
+    spinner.addColorStop(0, '#ffc46b'); spinner.addColorStop(0.55, '#ff7a1a'); spinner.addColorStop(1, '#d64f04');
     ctx.fillStyle = spinner;
-    ctx.beginPath(); ctx.ellipse(0, -70, 5.4, 4.4, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = '#5d6874'; ctx.lineWidth = 1.2; ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(0, -90, 5.8, 4.6, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#8f3403'; ctx.lineWidth = 1.2; ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.beginPath(); ctx.ellipse(-1.8, -91.8, 1.7, 1.1, -0.4, 0, Math.PI * 2); ctx.fill();
 
     ctx.restore();
   }
+
 
   // ---- Instrument panel + HUD -------------------------------------------
   drawPanel(state) {
