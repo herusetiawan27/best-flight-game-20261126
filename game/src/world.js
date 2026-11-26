@@ -10,7 +10,7 @@ export function courseX(z) {
   return Math.sin(z * 0.0016) * 95 + Math.sin(z * 0.00045 + 1.2) * 55;
 }
 
-export function buildWorld(seed) {
+export function buildWorld(seed, ringRadius = RING_RADIUS) {
   const rng = mulberry32(seed);
 
   // --- Rings -------------------------------------------------------------
@@ -23,7 +23,7 @@ export function buildWorld(seed) {
     // Ahead point is 10 m further north (z-10); heading = atan2(dx, -dz).
     const dx = courseX(z - 10) - courseX(z + 10);
     const heading = Math.atan2(dx, 20);
-    rings.push({ i, x, y, z, r: RING_RADIUS, heading, passed: false, hit: false });
+    rings.push({ i, x, y, z, r: ringRadius, heading, passed: false, hit: false, passAt: -99 });
   }
 
   // --- Runway: on the coast island just past the last ring ----------------
@@ -61,6 +61,9 @@ export function buildWorld(seed) {
   island(255, -2080, 135, 14);
   island(runway.x, runway.z - 40, 235, 10, { runwayIsland: true }); // finale island
   island(-330, -2620, 120, 12);
+  // Rocky cliff islets flanking the strait — tall, grey, sparse.
+  island(-455, -1250, 150, 30, { cliff: true });
+  island(470, -1980, 170, 34, { cliff: true });
   // Seeded scatter, kept clear of the course corridor.
   for (let k = 0; k < 14; k++) {
     const z = rngRange(rng, 260, -2900);
@@ -92,6 +95,21 @@ export function buildWorld(seed) {
       heading: rngRange(rng, 0, Math.PI * 2),
       sail: rng() < 0.6,
       hue: rngInt(rng, 0, 3),
+      bobPhase: rngRange(rng, 0, Math.PI * 2),
+    });
+  }
+
+  // Bird flocks: small groups circling thermals over the strait. Their
+  // positions are a pure function of sim time (see render.js), so the
+  // world build only stores the flock anchors.
+  const birds = [];
+  const flockSpots = [
+    { x: -120, y: 96, z: -760 }, { x: 150, y: 112, z: -1560 }, { x: -60, y: 88, z: -2280 },
+  ];
+  for (const s of flockSpots) {
+    birds.push({
+      ...s, radius: rngRange(rng, 26, 44), speed: rngRange(rng, 0.14, 0.22),
+      phase: rngRange(rng, 0, Math.PI * 2), count: 5,
     });
   }
 
@@ -104,7 +122,7 @@ export function buildWorld(seed) {
     });
   }
 
-  return { seed, rings, runway, islands, lighthouse, boats, clouds };
+  return { seed, rings, runway, islands, lighthouse, boats, clouds, birds };
 }
 
 // Ground height at a point: sea level 0, or island height inside an island

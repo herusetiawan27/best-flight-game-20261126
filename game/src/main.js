@@ -1,7 +1,7 @@
 // Golden Strait Run — main game logic: flight model, ring course,
 // landing / crash rules, screens, autopilot (for screenshot mode),
 // and the normal requestAnimationFrame loop.
-import { W, H, START, LANDING, EFFECTS } from './config.js';
+import { W, H, START, LANDING, EFFECTS, DIFFICULTY, MEDALS, RING_RADIUS } from './config.js';
 import { buildWorld, groundHeightAt, overRunway } from './world.js';
 import { Renderer } from './render.js';
 import { Input } from './input.js';
@@ -9,8 +9,25 @@ import { AudioEngine } from './audio.js';
 import { stepFlight } from './physics.js';
 import { Camera } from './camera.js';
 import { Effects } from './effects.js';
+import { drawHUD, drawTitle, drawCountdown, drawPause, drawResults, drawCrash, drawTouchControls } from './ui.js';
 import { clamp, angDiff } from './random.js';
 import { parseShotParams, setupShotScene } from './shots.js';
+
+// Best score persistence (guarded: headless / file contexts may lack it).
+const BEST_KEY = 'gsr_best_v1';
+function loadBest() {
+  try {
+    if (typeof localStorage === 'undefined') return null;
+    const raw = localStorage.getItem(BEST_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) { return null; }
+}
+function saveBest(best) {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(BEST_KEY, JSON.stringify(best));
+  } catch (e) { /* ignore */ }
+}
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
@@ -21,16 +38,49 @@ const seed = shot ? shot.seed : (parseInt(new URLSearchParams(window.location.se
 
 class Game {
   constructor() {
+    this.seedVal = seed;
     this.world = buildWorld(seed);
     this.renderer = new Renderer(ctx);
     this.audio = new AudioEngine();
     this.camera = new Camera();
     this.fx = new Effects();
+    this.difficulty = 'normal';
+    this.landCfg = null;
+    this.best = loadBest();
+    this.autoMode = false;
+    this._autoLogged = false;
+    this.countdownT = 0;
     this.frameDt = 1 / 60;
     this.input = shot ? null : new Input(canvas);
     this.reset();
-    this.mode = 'title'; // title | playing | paused | success | crashed
+    this.mode = 'title'; // title | countdown | playing | landing | paused | success | crashed
     this.time = 0;
+  }
+
+  // Difficulty: ring size, physics assist and landing strictness, then
+  // a fresh world at that ring size. Back to the title screen.
+  applyDifficulty(key) {
+    const d = DIFFICULTY[key];
+    if (!d) return;
+    this.difficulty = key;
+    this.assist = d.assist;
+    this.landCfg = { ...d.landing };
+    this.world = buildWorld(this.seedVal, RING_RADIUS * d.ringScale);
+    this.reset();
+    if (this.mode !== 'shot') this.mode = 'title';
+  }
+
+  computeMedal() {
+    if (this.ringsHit >= this.world.rings.length &&
+        this.finalTime <= MEDALS.goldTime && this.maxStreak >= MEDALS.goldCombo) return 'GOLD';
+    if (this.ringsHit >= MEDALS.silverRings && this.finalTime <= MEDALS.silverTime) return 'SILVER';
+    return 'BRONZE';
+  }
+
+  startGame(withCountdown) {
+    this.reset();
+    if (withCountdown) { this.mode = 'countdown'; this.countdownT = 2.1; }
+    else this.mode = 'playing';
   }
 
   reset() {
@@ -64,6 +114,7 @@ class Game {
     this.bounceV = 0;
     this.rating = '';
     this.medal = '';
+    this.newBest = false;
   }
 
   // Combo currently shown: the streak dies when the window lapses.
@@ -124,6 +175,15 @@ class Game {
     this.fx.update(dt, this);
     if (this.landingT >= LANDING.rolloutTime) {
       this.mode = 'success';
+      this.medal = this.computeMedal();
+      if (!this.best || this.score > this.best.score) {
+        this.best = {
+          score: this.score, time: Math.round(this.finalTime * 10) / 10,
+          medal: this.medal, rating: this.rating, difficulty: this.difficulty,
+        };
+        this.newBest = true;
+        saveBest(this.best);
+      }
       this.audio.success();
       this.audio.setEngine(0, 0);
     }
@@ -269,6 +329,11 @@ class Game {
       c.roll = clamp(c.roll + mx * 0.9, -1, 1);
       c.pitch = clamp(c.pitch - my * 0.8, -1, 1);
     }
+    if (inp.touch && inp.touch.active) {
+      c.roll = clamp(c.roll + inp.touch.joyX, -1, 1);
+      c.pitch = clamp(c.pitch - inp.touch.joyY, -1, 1);
+      if (inp.touch.throttleActive) this.plane.throttle = inp.touch.throttle;
+    }
     return c;
   }
 
@@ -306,7 +371,15 @@ class Game {
     const yErr = targetY - p.y;
     const desiredPitch = clamp(yErr * pitchGain - this.vs * 0.014, -0.5, 0.55);
     c.pitch = clamp((desiredPitch - p.pitch) * 3.4, -1, 1);
-    const targetThrottle = this.phase === 'runway' ? (dist < 300 ? 0.20 : 0.42) : 0.62;
+    let targetThrottle = 0.62;
+    if (this.phase === 'runway') {
+      // On final, settle a few m/s under the (difficulty-scaled)
+      // touchdown speed limit.
+      const lim = this.landLimits();
+      const vFinal = clamp(lim.maxSpeed - 3, 25, 27);
+      const thrFinal = clamp((vFinal - 14) / (78 - 14), 0.05, 0.4);
+      targetThrottle = dist < 300 ? thrFinal : 0.42;
+    }
     c.throttle = clamp((targetThrottle - p.throttle) * 3, -1, 1);
     return c;
   }
@@ -321,6 +394,8 @@ class Game {
       camMode: this.camera.mode,
       fx: this.fx, combo: this.comboActive, maxStreak: this.maxStreak,
       rating: this.rating, medal: this.medal,
+      ringsHit: this.ringsHit, finalTime: this.finalTime,
+      crashReason: this.crashReason, newBest: this.newBest,
       difficulty: this.difficulty || 'normal',
       best: this.best || null,
       countdown: this.countdown || 0,
@@ -333,73 +408,75 @@ class Game {
     const snap = this.mode === 'shot';
     const st = this.renderState();
     st.camView = this.camera.update(this.plane, snap ? 0 : this.frameDt, this.time, snap);
+    this._st = st;
     this.renderer.render(st);
   }
 
-  // --- Overlay screens ------------------------------------------------------
-  overlayTitle() {
-    ctx.save();
-    ctx.fillStyle = 'rgba(10, 20, 36, 0.42)';
-    ctx.fillRect(0, 0, W, H);
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#ffd94d';
-    ctx.strokeStyle = '#7a4d00'; ctx.lineWidth = 3;
-    ctx.font = 'bold 74px Georgia, serif';
-    ctx.strokeText('GOLDEN STRAIT RUN', W / 2, 168);
-    ctx.fillText('GOLDEN STRAIT RUN', W / 2, 168);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '24px Georgia, serif';
-    ctx.fillText('A golden-hour seaplane flight through the glowing rings of the strait', W / 2, 208);
-    ctx.font = 'bold 27px monospace';
-    ctx.fillStyle = (Math.floor(this.time * 1.6) % 2 === 0) ? '#ffe9a8' : '#ffffff';
-    ctx.fillText('CLICK OR PRESS ENTER TO FLY', W / 2, 292);
-    ctx.font = '19px monospace';
-    ctx.fillStyle = '#dff2ff';
-    const lines = [
-      'ARROW KEYS / A D — pitch & roll        W / S — throttle',
-      'MOUSE — steer toward the pointer',
-      'Fly through all 12 golden rings, then land gently',
-      'on the coastal runway: slow, low, aligned, soft sink.',
-      'R — restart      P — pause      M — mute',
-    ];
-    lines.forEach((l, i) => ctx.fillText(l, W / 2, 348 + i * 30));
-    ctx.restore();
-  }
-
-  overlayCenter(title, sub, lines, accent) {
-    ctx.save();
-    ctx.fillStyle = 'rgba(8, 14, 24, 0.62)';
-    ctx.fillRect(0, 0, W, H);
-    ctx.textAlign = 'center';
-    ctx.fillStyle = accent;
-    ctx.font = 'bold 58px Georgia, serif';
-    ctx.fillText(title, W / 2, 250);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '23px monospace';
-    ctx.fillText(sub, W / 2, 296);
-    ctx.font = '21px monospace';
-    ctx.fillStyle = '#dff2ff';
-    lines.forEach((l, i) => ctx.fillText(l, W / 2, 348 + i * 32));
-    ctx.restore();
+  // --- One-shot keys / clicks, consumed once per frame ----------------------
+  processPressed() {
+    const inp = this.input;
+    if (inp.takePressed('Enter') || inp.takePressed('__click')) {
+      this.audio.start();
+      if (this.mode === 'title') {
+        // Tapping a difficulty pill selects it instead of starting.
+        if (inp.clickY > 0.29 && inp.clickY < 0.39 && inp.clickX > 0.24 && inp.clickX < 0.76) {
+          const keys = Object.keys(DIFFICULTY);
+          const idx = Math.min(2, Math.max(0, Math.floor((inp.clickX - 0.24) / (0.52 / 3))));
+          this.applyDifficulty(keys[idx]);
+        } else {
+          this.startGame(true);
+        }
+      } else if (this.mode === 'success' || this.mode === 'crashed') {
+        this.reset(); this.mode = 'playing';
+      } else if (this.mode === 'paused') {
+        this.mode = 'playing';
+      }
+    }
+    if (inp.takePressed('1')) this.applyDifficulty('santai');
+    if (inp.takePressed('2')) this.applyDifficulty('normal');
+    if (inp.takePressed('3')) this.applyDifficulty('pro');
+    if (inp.takePressed('r')) {
+      this.audio.start();
+      this.reset(); this.mode = 'playing';
+    }
+    if (inp.takePressed('p')) {
+      if (this.mode === 'playing') this.mode = 'paused';
+      else if (this.mode === 'paused') this.mode = 'playing';
+    }
+    if (inp.takePressed('m')) this.audio.toggleMute();
+    if (inp.takePressed('c')) this.camera.cycle();
+    if (inp.takePressed('t')) {
+      // Debug/demo: hand the controls to the autopilot and log the result.
+      this.autoMode = !this.autoMode;
+      this._autoLogged = false;
+      if (this.autoMode && this.mode === 'title') this.startGame(true);
+      else if (this.autoMode && (this.mode === 'success' || this.mode === 'crashed')) {
+        this.reset(); this.mode = 'playing';
+      }
+      console.log(`[GSR] autopilot demo ${this.autoMode ? 'ON' : 'OFF'} (difficulty ${this.difficulty})`);
+    }
+    inp.clearPressed();
   }
 
   drawScreen() {
     this.render();
-    if (this.mode === 'title') this.overlayTitle();
-    else if (this.mode === 'paused') this.overlayCenter('PAUSED', 'Press P to resume', ['Take a breath — the strait waits.'], '#aee6ff');
-    else if (this.mode === 'success') {
-      const mm = String(Math.floor(this.finalTime / 60)).padStart(2, '0');
-      const ss = String(Math.floor(this.finalTime % 60)).padStart(2, '0');
-      this.overlayCenter('PERFECT LANDING!', 'You greased it onto the coastal runway.', [
-        `FINAL SCORE   ${this.score}`,
-        `RINGS  ${this.ringsHit} / ${this.world.rings.length}      TIME  ${mm}:${ss}`,
-        'Press R to fly again',
-      ], '#8fd18a');
+    const st = this._st;
+    const project = (x, y, z) => this.renderer.project(x, y, z);
+    drawHUD(ctx, st, project);
+    if (this.mode === 'title') {
+      drawTitle(ctx, { time: this.time, difficulty: this.difficulty, best: this.best });
+    } else if (this.mode === 'countdown') {
+      drawCountdown(ctx, Math.max(1, Math.ceil(this.countdownT / 0.7)));
+    } else if (this.mode === 'paused') {
+      drawPause(ctx, { camMode: this.camera.mode, muted: this.audio.muted });
+    } else if (this.mode === 'success') {
+      drawResults(ctx, st);
     } else if (this.mode === 'crashed') {
-      this.overlayCenter('CRASHED', this.crashReason, [
-        `SCORE   ${this.score}      RINGS  ${this.ringsHit} / ${this.world.rings.length}`,
-        'Press R to try again',
-      ], '#ff7b6b');
+      drawCrash(ctx, st);
+    }
+    if ((this.mode === 'playing' || this.mode === 'countdown' || this.mode === 'landing') &&
+        st.touch && st.touch.active) {
+      drawTouchControls(ctx, st);
     }
   }
 }
@@ -419,7 +496,10 @@ if (shot) {
     if (game.phase === 'runway' && shot.scene !== 'approach') { /* keep flying */ }
   }
   game.render();
-  if (shot.scene === 'title') game.overlayTitle();
+  drawHUD(ctx, game._st, (x, y, z) => game.renderer.project(x, y, z));
+  if (shot.scene === 'title') {
+    drawTitle(ctx, { time: game.time, difficulty: 'normal', best: null });
+  }
   window.__shotReady = true;
 } else {
   // Normal interactive loop.
@@ -433,24 +513,21 @@ if (shot) {
     if (dt > 0.1) dt = 0.1;
     game.frameDt = dt;
 
-    const inp = game.input;
-    // One-shot keys.
-    if (inp.takePressed('Enter') || inp.takePressed('__click')) {
-      game.audio.start();
-      if (game.mode === 'title') game.mode = 'playing';
-      else if (game.mode === 'success' || game.mode === 'crashed') { game.reset(); game.mode = 'playing'; }
+    game.processPressed();
+
+    // Debug autopilot: report the finished run once.
+    if (game.autoMode && !game._autoLogged &&
+        (game.mode === 'success' || game.mode === 'crashed')) {
+      game._autoLogged = true;
+      console.log('[GSR autopilot] result:', JSON.stringify({
+        rings: `${game.ringsHit}/${game.world.rings.length}`,
+        landed: game.mode === 'success',
+        score: game.score,
+        timeSec: Math.round(game.finalTime || game.elapsed),
+        rating: game.rating || null, medal: game.medal || null,
+        crashReason: game.crashReason || null,
+      }));
     }
-    if (inp.takePressed('r') || inp.takePressed('R')) {
-      game.audio.start();
-      game.reset(); game.mode = 'playing';
-    }
-    if (inp.takePressed('p') || inp.takePressed('P')) {
-      if (game.mode === 'playing') game.mode = 'paused';
-      else if (game.mode === 'paused') game.mode = 'playing';
-    }
-    if (inp.takePressed('m') || inp.takePressed('M')) game.audio.toggleMute();
-    if (inp.takePressed('c') || inp.takePressed('C')) game.camera.cycle();
-    inp.clearPressed();
 
     if (game.mode === 'playing' || game.mode === 'landing') {
       acc += dt;
@@ -460,6 +537,12 @@ if (shot) {
       const gH = groundHeightAt(game.world, game.plane.x, game.plane.z);
       const prox = gH <= 0.6 ? clamp(1 - Math.max(0, game.plane.y - gH) / 26, 0, 1) : 0;
       game.audio.setWater(prox * clamp(game.plane.speed / 30, 0.25, 1));
+    } else if (game.mode === 'countdown') {
+      game.countdownT -= dt;
+      acc += dt;
+      const glide = { pitch: 0, roll: 0, throttle: 0 };
+      while (acc >= STEP) { game.step(STEP, glide); acc -= STEP; }
+      if (game.countdownT <= 0) game.mode = 'playing';
     } else {
       // Title / end screens: gentle idle drift so the scene stays alive.
       game.time += dt;

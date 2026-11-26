@@ -5,6 +5,9 @@
 import { W, H, FOCAL, EFFECTS } from './config.js';
 import { clamp, angDiff } from './random.js';
 
+// World anchor of the low sun (also drives the sea's golden path).
+const SUN = { x: -260, y: 95, z: -2600 };
+
 export class Renderer {
   constructor(ctx) { this.ctx = ctx; this.cam = null; }
 
@@ -48,6 +51,7 @@ export class Renderer {
     this.cam = state.camView || this.legacyView(plane);
     this.drawSky(state);
     this.drawSea(state);
+    this.drawGlitter(state);
 
     // --- Painter's algorithm: collect drawables, sort far -> near. ---
     const items = [];
@@ -70,12 +74,14 @@ export class Renderer {
     for (const it of items) {
       if (it.d < -40) continue;
       if (it.kind === 'island') this.drawIsland(it.o);
-      else if (it.kind === 'boat') this.drawBoat(it.o);
+      else if (it.kind === 'boat') this.drawBoat(it.o, time);
       else if (it.kind === 'lighthouse') this.drawLighthouse(it.o, time);
       else if (it.kind === 'runway') this.drawRunway(it.o);
       else if (it.kind === 'ring') this.drawRing(it.o, state, it.idx === state.currentRing);
-      else if (it.kind === 'cloud') this.drawCloud(it.o);
+      else if (it.kind === 'cloud') this.drawCloud(it.o, time);
     }
+    this.drawBirds(state);
+    this.drawFog(state);
 
     if (state.fx) {
       this.drawRipples(state);
@@ -89,7 +95,6 @@ export class Renderer {
       this.drawPanel(state);
     }
     this.drawSpeedLines(state);
-    this.drawHUD(state);
     if (state.fx) this.drawPopups(state);
     if (state.flash > 0) { // golden flash on ring pass
       ctx.fillStyle = `rgba(255, 210, 90, ${state.flash * 0.22})`;
@@ -107,27 +112,33 @@ export class Renderer {
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, W, H);
     // Low golden-hour sun, ahead-left of the course start direction.
-    const sun = this.project(-260, 95, -2600);
+    const sun = this.project(SUN.x, SUN.y, SUN.z);
     const sx = sun ? sun.x : W * 0.3, sy = sun ? clamp(sun.y, 40, H * 0.55) : H * 0.3;
-    const rg = ctx.createRadialGradient(sx, sy, 4, sx, sy, 190);
+    const rg = ctx.createRadialGradient(sx, sy, 4, sx, sy, 250);
     rg.addColorStop(0, 'rgba(255,246,200,0.95)');
     rg.addColorStop(0.18, 'rgba(255,214,110,0.75)');
     rg.addColorStop(1, 'rgba(255,190,80,0)');
     ctx.fillStyle = rg;
-    ctx.beginPath(); ctx.arc(sx, sy, 190, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(sx, sy, 250, 0, Math.PI * 2); ctx.fill();
+    // Horizontal flare streak through the disc.
+    const flare = ctx.createLinearGradient(sx - 190, 0, sx + 190, 0);
+    flare.addColorStop(0, 'rgba(255,230,160,0)');
+    flare.addColorStop(0.5, 'rgba(255,236,180,0.5)');
+    flare.addColorStop(1, 'rgba(255,230,160,0)');
+    ctx.fillStyle = flare;
+    ctx.fillRect(sx - 190, sy - 3, 380, 6);
     ctx.fillStyle = '#fff7d6';
-    ctx.beginPath(); ctx.arc(sx, sy, 30, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(sx, sy, 40, 0, Math.PI * 2); ctx.fill();
   }
 
   drawSea(state) {
-    // The water layer is FROZEN (revision round 4): it is painted
-    // exactly once into an offscreen canvas (see _paintSeaLayer) and
-    // blitted every frame. The painting reads nothing but the canvas
-    // size — no time, no frame count, no plane state, no camera — so
-    // the sea is pixel-identical in every frame while flying. The
-    // only things that ever change on the water are the world objects
-    // projected onto it (islands, boats, lighthouse, rings, runway)
-    // and the plane's own shadow.
+    // Base water layer: a plain colour gradient + haze band, painted
+    // once into an offscreen canvas and blitted. It carries no pattern
+    // at all, so nothing in it can slide or roll with the steering.
+    // The water's LIFE is drawn separately in drawGlitter(): sparkle
+    // anchored to WORLD cells, projected like any other world object —
+    // it streams past with correct parallax as you fly, shimmers gently
+    // with sim time, and turns golden along the sun's reflection path.
     const { ctx } = this;
     if (!this._seaLayer) this._seaLayer = this._paintSeaLayer();
     ctx.drawImage(this._seaLayer, 0, 0);
@@ -137,8 +148,6 @@ export class Renderer {
     const layer = document.createElement('canvas');
     layer.width = W; layer.height = H;
     const ctx = layer.getContext('2d');
-    // Horizon at a fixed screen height; colour gradient over fixed
-    // screen rows; sparkle texture a static screen-space pattern.
     const hy = H * 0.5;
     // Haze band: a pale blend straddling the horizon line, so distant
     // objects melt into the waterline instead of crossing a hard edge.
@@ -147,8 +156,7 @@ export class Renderer {
     haze.addColorStop(1, 'rgba(186, 233, 233, 0.55)');
     ctx.fillStyle = haze;
     ctx.fillRect(0, hy - 46, W, 58);
-    // Sea body: gradient anchored to fixed screen rows, so the colour
-    // bands can never slide up or down.
+    // Sea body: gradient anchored to fixed screen rows.
     const g = ctx.createLinearGradient(0, H * 0.42, 0, H);
     g.addColorStop(0, '#3ec6cd');
     g.addColorStop(0.3, '#1b9db4');
@@ -156,31 +164,50 @@ export class Renderer {
     g.addColorStop(1, '#0a5f83');
     ctx.fillStyle = g;
     ctx.fillRect(0, hy, W, H - hy);
-    // Sun glitter path: a soft golden wedge, fixed in screen space.
-    ctx.fillStyle = 'rgba(255,220,130,0.10)';
-    ctx.beginPath();
-    ctx.moveTo(W * 0.24, hy); ctx.lineTo(W * 0.40, hy); ctx.lineTo(W * 0.54, H); ctx.lineTo(W * 0.06, H);
-    ctx.closePath(); ctx.fill();
-    // Static sparkle texture: deterministic flecks placed purely from
-    // screen coordinates (a hash of the cell), growing denser and
-    // larger toward the bottom of the frame. Nothing here reads the
-    // camera or the clock, so the pattern never moves at all.
-    const cell = 46;
-    for (let row = 0; row * cell < H - hy; row++) {
-      const y = hy + 14 + row * cell;
-      if (y > H - 6) break;
-      const t = (y - hy) / (H - hy); // 0 at the horizon, 1 at the bottom
-      const n = 3 + Math.floor(t * 9);
-      for (let i = 0; i < n; i++) {
-        const h1 = Math.sin(row * 127.1 + i * 311.7) * 43758.5453;
-        const fx = (h1 - Math.floor(h1)) * W;
-        const h2 = Math.sin(row * 269.5 + i * 183.3) * 28001.8384;
-        const fw = 5 + (h2 - Math.floor(h2)) * (10 + t * 26);
-        ctx.fillStyle = `rgba(255,255,255,${0.05 + t * 0.13})`;
-        ctx.beginPath(); ctx.ellipse(fx, y, fw, 1.4 + t * 1.6, 0, 0, Math.PI * 2); ctx.fill();
+    return layer;
+  }
+
+  // World-space sun glitter: one fleck per water cell on a 46 m grid
+  // around the camera. Fleck placement is a hash of the cell (fixed in
+  // the world); brightness shimmers with sim time; flecks near the
+  // camera->sun reflection line burn gold. Cells under islands are not
+  // culled (islands draw over them), which keeps this cheap and simple.
+  drawGlitter(state) {
+    const { ctx } = this;
+    const cam = this.cam;
+    const cell = 46, range = 700;
+    const cx0 = Math.floor((cam.x - range) / cell), cx1 = Math.floor((cam.x + range) / cell);
+    const cz0 = Math.floor((cam.z - range) / cell), cz1 = Math.floor((cam.z + range) / cell);
+    ctx.save();
+    for (let ix = cx0; ix <= cx1; ix++) {
+      for (let iz = cz0; iz <= cz1; iz++) {
+        const h1 = Math.sin(ix * 127.1 + iz * 311.7) * 43758.5453;
+        const fx = (h1 - Math.floor(h1)) - 0.5;
+        const h2 = Math.sin(ix * 269.5 + iz * 183.3) * 28001.8384;
+        const fz = (h2 - Math.floor(h2)) - 0.5;
+        const wx = (ix + 0.5 + fx * 0.7) * cell;
+        const wz = (iz + 0.5 + fz * 0.7) * cell;
+        const p = this.project(wx, 0, wz);
+        if (!p || p.x < -20 || p.x > W + 20 || p.y < H * 0.47 || p.y > H + 10) continue;
+        const phase = (h1 - Math.floor(h1)) * 6.28 + (h2 - Math.floor(h2)) * 3.1;
+        const shimmer = 0.55 + 0.45 * Math.sin(state.time * 1.5 + phase);
+        // Golden path: cells near the line from the camera to the sun.
+        let gold = 0;
+        const t = (wz - cam.z) / (SUN.z - cam.z);
+        if (t > 0.02 && t < 1.7) {
+          const pathX = cam.x + (SUN.x - cam.x) * t;
+          const d = Math.abs(wx - pathX);
+          gold = clamp(1 - d / (46 + 130 * t), 0, 1);
+        }
+        const a = (0.05 + 0.16 * shimmer) * (1 + gold * 1.6);
+        ctx.fillStyle = gold > 0.35
+          ? `rgba(255, 216, 130, ${a.toFixed(3)})`
+          : `rgba(235, 252, 255, ${a.toFixed(3)})`;
+        const rx = clamp(1.7 * p.s, 0.8, 6.5) * (1 + gold * 0.5);
+        ctx.beginPath(); ctx.ellipse(p.x, p.y, rx, Math.max(0.5, rx * 0.30), 0, 0, Math.PI * 2); ctx.fill();
       }
     }
-    return layer;
+    ctx.restore();
   }
 
   poly(points, fill, stroke, lw = 2) {
@@ -206,31 +233,84 @@ export class Renderer {
     return pts;
   }
 
+  // Distance haze: a soft golden band across the horizon rows, drawn
+  // over the world so far objects melt into the evening light.
+  drawFog(state) {
+    const { ctx } = this;
+    const g = ctx.createLinearGradient(0, H * 0.36, 0, H * 0.60);
+    g.addColorStop(0, 'rgba(255, 216, 150, 0)');
+    g.addColorStop(0.55, 'rgba(255, 216, 150, 0.13)');
+    g.addColorStop(1, 'rgba(255, 216, 150, 0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, H * 0.36, W, H * 0.24);
+  }
+
+  // Bird flocks circling thermals: positions are a pure function of
+  // sim time, drawn as tiny flapping silhouettes.
+  drawBirds(state) {
+    const { ctx } = this;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(28, 38, 48, 0.75)';
+    ctx.lineCap = 'round';
+    for (const f of state.world.birds || []) {
+      for (let k = 0; k < f.count; k++) {
+        const a = state.time * f.speed + f.phase + k * 0.55;
+        const bx = f.x + Math.cos(a) * f.radius + (k % 3) * 7 - 7;
+        const bz = f.z + Math.sin(a) * f.radius;
+        const by = f.y + Math.sin(state.time * 0.7 + k * 1.7) * 2.5 + (k % 2) * 3;
+        const p = this.project(bx, by, bz);
+        if (!p) continue;
+        const w = clamp(p.s * 1.15, 1.6, 6.5);
+        const flap = Math.sin(state.time * 8 + k * 1.3) * w * 0.55;
+        ctx.lineWidth = Math.max(1, w * 0.22);
+        ctx.beginPath();
+        ctx.moveTo(p.x - w, p.y - flap);
+        ctx.quadraticCurveTo(p.x - w * 0.4, p.y + Math.abs(flap) * 0.3, p.x, p.y);
+        ctx.quadraticCurveTo(p.x + w * 0.4, p.y + Math.abs(flap) * 0.3, p.x + w, p.y - flap);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
   drawIsland(isl) {
     const { ctx } = this;
     const centre = this.project(isl.x, 2, isl.z);
     if (!centre || centre.cz > 3200) return;
-    // Sandy beach disc at sea level, then a green dome disc raised by height.
-    const beach = this.circlePoints(isl.x, isl.z, isl.r * 1.12, 1.2);
-    this.poly(beach, '#f4dc9a');
     const lift = isl.h;
-    const green = this.circlePoints(isl.x, isl.z, isl.r, 1.2 + lift * 0.35);
-    // Side skirt between beach and top gives the island body.
-    if (beach.every(Boolean) && green.every(Boolean)) {
-      ctx.fillStyle = '#c9a86a';
-      ctx.beginPath();
-      ctx.moveTo(beach[0].x, beach[0].y);
-      for (const p of beach) ctx.lineTo(p.x, p.y);
-      ctx.closePath(); ctx.fill();
-      this.poly(green, '#2e9e5b');
-      // Darker green inner patch.
-      const inner = this.circlePoints(isl.x, isl.z, isl.r * 0.6, 1.6 + lift * 0.35);
-      this.poly(inner, '#23804a');
+    if (isl.cliff) {
+      // Rocky cliff islet: grey shore, stacked rock strata, scrub top.
+      this.poly(this.circlePoints(isl.x, isl.z, isl.r * 1.05, 1.0), '#8d8577');
+      const bands = ['#7a7268', '#8a8175', '#6b6259'];
+      for (let i = 0; i < 3; i++) {
+        const rr = isl.r * (0.92 - i * 0.16);
+        const yy = 1.2 + lift * (0.22 + i * 0.20);
+        this.poly(this.circlePoints(isl.x, isl.z, rr, yy), bands[i]);
+      }
+      this.poly(this.circlePoints(isl.x, isl.z, isl.r * 0.44, 1.2 + lift * 0.82), '#5d7a4a');
+    } else {
+      // Sandy beach disc at sea level, then a green dome disc raised by height.
+      const beach = this.circlePoints(isl.x, isl.z, isl.r * 1.12, 1.2);
+      this.poly(beach, '#f4dc9a');
+      const green = this.circlePoints(isl.x, isl.z, isl.r, 1.2 + lift * 0.35);
+      // Side skirt between beach and top gives the island body.
+      if (beach.every(Boolean) && green.every(Boolean)) {
+        ctx.fillStyle = '#c9a86a';
+        ctx.beginPath();
+        ctx.moveTo(beach[0].x, beach[0].y);
+        for (const p of beach) ctx.lineTo(p.x, p.y);
+        ctx.closePath(); ctx.fill();
+        this.poly(green, '#2e9e5b');
+        // Darker green inner patch.
+        const inner = this.circlePoints(isl.x, isl.z, isl.r * 0.6, 1.6 + lift * 0.35);
+        this.poly(inner, '#23804a');
+      }
     }
-    // Palm trees: little trunk + frond star.
-    for (const t of isl.trees) {
-      const p = this.project(t.x, 3 + lift * 0.35, t.z);
-      if (!p || p.s < 0.25) continue;
+    // Palm trees: little trunk + frond star (sparser on the cliffs).
+    isl.trees.forEach((t, ti) => {
+      if (isl.cliff && ti % 2) return;
+      const p = this.project(t.x, 3 + lift * (isl.cliff ? 0.8 : 0.35), t.z);
+      if (!p || p.s < 0.25) return;
       const s = p.s * t.s * 14;
       ctx.strokeStyle = '#6b4a2b'; ctx.lineWidth = Math.max(1, s * 0.09);
       ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x, p.y - s); ctx.stroke();
@@ -240,12 +320,13 @@ export class Renderer {
         ctx.beginPath(); ctx.moveTo(p.x, p.y - s);
         ctx.lineTo(p.x + Math.cos(a) * s * 0.55, p.y - s + Math.sin(a) * s * 0.3 - s * 0.12); ctx.stroke();
       }
-    }
+    });
   }
 
-  drawBoat(b) {
+  drawBoat(b, time = 0) {
     const { ctx } = this;
-    const p = this.project(b.x, 0, b.z);
+    const bobY = Math.sin(time * 1.25 + (b.bobPhase || 0)) * 0.35;
+    const p = this.project(b.x, bobY, b.z);
     if (!p || p.s < 0.2) return;
     const s = p.s * 9;
     const hullColors = ['#e4572e', '#f2f2f2', '#2e86e4', '#ffd257'];
@@ -502,9 +583,11 @@ export class Renderer {
     ctx.restore();
   }
 
-  drawCloud(cl) {
+  drawCloud(cl, time = 0) {
     const { ctx } = this;
-    const p = this.project(cl.x, cl.y, cl.z);
+    // Clouds drift slowly east, wrapped around the strait.
+    const driftX = ((cl.x + time * 1.1 + 900) % 1800) - 900;
+    const p = this.project(driftX, cl.y, cl.z);
     if (!p) return;
     const s = p.s * cl.s;
     if (s < 4) return;
@@ -998,69 +1081,5 @@ export class Renderer {
     ctx.restore();
     ctx.fillStyle = '#cfe8ff'; ctx.font = 'bold 11px monospace'; ctx.textAlign = 'center';
     ctx.fillText(cfg.label, cx, cy + r + 14);
-  }
-
-  drawHUD(state) {
-    const { ctx } = this;
-    const { plane } = state;
-    const altFt = Math.round(plane.y * 3.281);
-    const spdKt = Math.round(plane.speed * 1.944);
-    let hdg = Math.round(((plane.heading * 180 / Math.PI) % 360 + 360) % 360);
-    ctx.save();
-    // Top-left flight data block.
-    ctx.fillStyle = 'rgba(8, 14, 22, 0.66)';
-    ctx.beginPath(); ctx.roundRect(14, 12, 300, 108, 10); ctx.fill();
-    ctx.strokeStyle = 'rgba(255,210,90,0.4)'; ctx.lineWidth = 1.5; ctx.stroke();
-    ctx.font = 'bold 21px monospace'; ctx.textAlign = 'left';
-    ctx.fillStyle = '#ffe9a8';
-    ctx.fillText(`ALTITUDE  ${altFt} FT`, 28, 44);
-    ctx.fillStyle = '#aee6ff';
-    ctx.fillText(`SPEED     ${spdKt} KT`, 28, 74);
-    ctx.fillStyle = '#d9ffd0';
-    ctx.fillText(`HEADING   ${String(hdg).padStart(3, '0')}°`, 28, 104);
-    // Top-right: score / timer / rings.
-    ctx.fillStyle = 'rgba(8, 14, 22, 0.66)';
-    ctx.beginPath(); ctx.roundRect(W - 314, 12, 300, 108, 10); ctx.fill();
-    ctx.strokeStyle = 'rgba(255,210,90,0.4)'; ctx.stroke();
-    ctx.fillStyle = '#ffe9a8';
-    ctx.fillText(`SCORE  ${state.score}`, W - 296, 44);
-    ctx.fillStyle = '#ffffff';
-    const t = Math.max(0, state.elapsed);
-    const mm = String(Math.floor(t / 60)).padStart(2, '0'), ss = String(Math.floor(t % 60)).padStart(2, '0');
-    ctx.fillText(`TIME   ${mm}:${ss}`, W - 296, 74);
-    ctx.fillStyle = '#ffd257';
-    const remaining = state.phase === 'runway' ? 0 : (state.totalRings - state.currentRing);
-    ctx.fillText(state.phase === 'runway' ? 'LAND ON RUNWAY!' : `RINGS LEFT  ${remaining}`, W - 296, 104);
-    // Target guidance: arrow at screen edge / centre reticle info.
-    const target = state.target;
-    if (target && state.phase !== 'done') {
-      const p = this.project(target.x, target.y, target.z);
-      ctx.font = 'bold 17px monospace'; ctx.textAlign = 'center';
-      if (p && p.cz > 0) {
-        const dist = Math.round(Math.hypot(target.x - plane.x, target.z - plane.z));
-        ctx.fillStyle = 'rgba(8,14,22,0.55)';
-        const label = state.phase === 'runway' ? `RUNWAY ${dist} m` : `RING ${state.currentRing + 1} — ${dist} m`;
-        const tw = ctx.measureText(label).width + 22;
-        ctx.beginPath(); ctx.roundRect(clamp(p.x, 70, W - 70) - tw / 2, clamp(p.y - 66, 128, H - 210), tw, 28, 8); ctx.fill();
-        ctx.fillStyle = '#ffd94d';
-        ctx.fillText(label, clamp(p.x, 70, W - 70), clamp(p.y - 66, 128, H - 210) + 20);
-      } else {
-        // Off-screen: arrow pointing toward the target bearing.
-        const rel = angDiff(Math.atan2(target.x - plane.x, -(target.z - plane.z)), plane.heading);
-        const ax = W / 2 + Math.sin(rel) * 120, ay = 150;
-        ctx.save();
-        ctx.translate(ax, ay); ctx.rotate(rel);
-        ctx.fillStyle = '#ffd94d';
-        ctx.beginPath(); ctx.moveTo(0, -18); ctx.lineTo(11, 10); ctx.lineTo(0, 3); ctx.lineTo(-11, 10); ctx.closePath(); ctx.fill();
-        ctx.restore();
-        ctx.fillStyle = '#ffd94d';
-        ctx.fillText('FOLLOW THE ARROW', W / 2, 196);
-      }
-    }
-    if (state.muted) {
-      ctx.fillStyle = '#ffb3b3'; ctx.font = 'bold 15px monospace'; ctx.textAlign = 'right';
-      ctx.fillText('MUTED (M)', W - 18, H - 148);
-    }
-    ctx.restore();
   }
 }

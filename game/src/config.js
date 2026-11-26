@@ -102,11 +102,13 @@ export const CONFIG = {
     dingStepSemis: 2,      // semitones the ding rises per combo level
   },
   // Difficulty: ring size, assist strength (auto-level + damping help),
-  // and how strict the touchdown judge is.
+  // and explicit landing limits. Note Pro tightens alignment and sink,
+  // not touchdown speed below the stall — a final flown at the stall
+  // speed cannot be landed by anyone.
   difficulty: {
-    santai: { label: 'SANTAI', ringScale: 1.35, assist: 1.5, landScale: 1.3 },
-    normal: { label: 'NORMAL', ringScale: 1.0, assist: 1.0, landScale: 1.0 },
-    pro: { label: 'PRO', ringScale: 0.78, assist: 0.55, landScale: 0.8 },
+    santai: { label: 'SANTAI', ringScale: 1.35, assist: 1.5, landing: { maxSpeed: 34, minSink: -8.0, maxAlignDeg: 24 } },
+    normal: { label: 'NORMAL', ringScale: 1.0, assist: 1.0, landing: { maxSpeed: 30, minSink: -6.5, maxAlignDeg: 18 } },
+    pro: { label: 'PRO', ringScale: 0.78, assist: 0.55, landing: { maxSpeed: 27, minSink: -5.5, maxAlignDeg: 13 } },
   },
   medals: {
     goldTime: 80,          // s, with all rings -> Gold
