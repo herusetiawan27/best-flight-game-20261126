@@ -5,8 +5,22 @@
 import { W, H, FOCAL, EFFECTS } from './config.js';
 import { clamp, angDiff } from './random.js';
 
-// World anchor of the low sun (also drives the sea's golden path).
+// World anchor of the low sun (drives the sky disc; the sea's golden
+// path is baked into the sea layer at the sun's usual screen spot).
 const SUN = { x: -260, y: 95, z: -2600 };
+
+// Screen column of the sun in chase view (ahead-left): the baked
+// golden reflection path on the water sits under it.
+const SUN_PATH_X = W * 0.43;
+
+// Deterministic 0..1 hash of a screen-space water cell. The sea's
+// flecks live on this fixed screen grid: their positions NEVER depend
+// on the camera, the plane, or the world — only the twinkle alpha
+// reads the clock.
+function cellHash(ix, iy, salt) {
+  const h = Math.sin(ix * 127.1 + iy * 311.7 + salt * 74.7) * 43758.5453;
+  return h - Math.floor(h);
+}
 
 export class Renderer {
   constructor(ctx) { this.ctx = ctx; this.cam = null; }
@@ -132,13 +146,19 @@ export class Renderer {
   }
 
   drawSea(state) {
-    // Base water layer: a plain colour gradient + haze band, painted
-    // once into an offscreen canvas and blitted. It carries no pattern
-    // at all, so nothing in it can slide or roll with the steering.
-    // The water's LIFE is drawn separately in drawGlitter(): sparkle
-    // anchored to WORLD cells, projected like any other world object —
-    // it streams past with correct parallax as you fly, shimmers gently
-    // with sim time, and turns golden along the sun's reflection path.
+    // THE WATER LAYER IS FULLY DECOUPLED FROM THE CAMERA (user
+    // diagnosis, in engine terms: the sea must sit at a fixed
+    // SEA_LEVEL, never inherit pitch/roll, never follow the camera
+    // on Y). Everything the water shows — gradient, haze, the golden
+    // sun path and the glitter flecks — is painted ONCE into an
+    // offscreen canvas as a pure function of SCREEN position and
+    // blitted. The horizon is locked to row H*0.5 for every flight
+    // state: climb, dive, bank, high or low, the layer is
+    // pixel-identical. The only per-frame water drawing is
+    // drawGlitter's twinkle, whose fleck POSITIONS sit on the same
+    // fixed screen grid (only their alpha breathes with sim time).
+    // World OBJECTS — islands, boats, rings, runway — still project
+    // through the camera as before; only the water surface is locked.
     const { ctx } = this;
     if (!this._seaLayer) this._seaLayer = this._paintSeaLayer();
     ctx.drawImage(this._seaLayer, 0, 0);
@@ -164,47 +184,95 @@ export class Renderer {
     g.addColorStop(1, '#0a5f83');
     ctx.fillStyle = g;
     ctx.fillRect(0, hy, W, H - hy);
+    this._paintSunPath(ctx, hy);
+    this._paintFlecks(ctx, hy);
     return layer;
   }
 
-  // World-space sun glitter: one fleck per water cell on a 46 m grid
-  // around the camera. Fleck placement is a hash of the cell (fixed in
-  // the world); brightness shimmers with sim time; flecks near the
-  // camera->sun reflection line burn gold. Cells under islands are not
-  // culled (islands draw over them), which keeps this cheap and simple.
+  // Golden sun-reflection path, baked in: a soft column of warm light
+  // under the sun's screen spot, brightest at the horizon and fading
+  // with depth, broken by short horizontal shimmer streaks. Pure
+  // screen space — it cannot slide with the camera.
+  _paintSunPath(ctx, hy) {
+    const halfW = 185;
+    const col = ctx.createLinearGradient(SUN_PATH_X - halfW, 0, SUN_PATH_X + halfW, 0);
+    col.addColorStop(0, 'rgba(255, 196, 92, 0)');
+    col.addColorStop(0.5, 'rgba(255, 205, 105, 1)');
+    col.addColorStop(1, 'rgba(255, 196, 92, 0)');
+    // Vertical falloff in bands (painted once, so bands cost nothing
+    // per frame).
+    const bands = 16;
+    for (let i = 0; i < bands; i++) {
+      const y0 = hy + (H - hy) * (i / bands);
+      const y1 = hy + (H - hy) * ((i + 1) / bands);
+      ctx.save();
+      ctx.globalAlpha = 0.30 * Math.pow(1 - i / bands, 1.4) + 0.015;
+      ctx.fillStyle = col;
+      ctx.fillRect(SUN_PATH_X - halfW, y0, halfW * 2, y1 - y0 + 1);
+      ctx.restore();
+    }
+    // Broken shimmer streaks inside the column.
+    for (let i = 0; i < 130; i++) {
+      const h1 = cellHash(i, 7, 11), h2 = cellHash(i, 13, 12), h3 = cellHash(i, 21, 13);
+      const depthT = h2;
+      const y = hy + 3 + depthT * (H - hy - 8);
+      const spread = halfW * (0.35 + depthT * 0.75);
+      const x = SUN_PATH_X + (h1 - 0.5) * 2 * spread;
+      const len = (5 + h3 * 26) * (0.5 + depthT);
+      ctx.fillStyle = `rgba(255, 224, 150, ${((0.10 + h3 * 0.22) * (1 - depthT * 0.55)).toFixed(3)})`;
+      ctx.beginPath(); ctx.ellipse(x, y, len, Math.max(0.6, len * 0.16), 0, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  // Static glitter flecks on the fixed screen grid: denser and larger
+  // toward the bottom of the frame (near water), gold-tinted inside
+  // the sun path, pale elsewhere. Baked once; never moves.
+  _paintFlecks(ctx, hy) {
+    const cellW = 44, cellH = 26;
+    const rows = Math.ceil((H - hy) / cellH), cols = Math.ceil(W / cellW);
+    for (let iy = 0; iy < rows; iy++) {
+      const depthT = iy / Math.max(1, rows - 1);
+      for (let ix = 0; ix < cols; ix++) {
+        if (cellHash(ix, iy, 1) > 0.28 + depthT * 0.42) continue;
+        const fx = ix * cellW + 5 + cellHash(ix, iy, 2) * (cellW - 10);
+        const fy = hy + iy * cellH + 4 + cellHash(ix, iy, 3) * (cellH - 8);
+        const rx = (1 + depthT * 3.2) * (0.6 + cellHash(ix, iy, 6) * 0.9);
+        const inPath = Math.abs(fx - SUN_PATH_X) < 185 * (0.4 + depthT * 0.7);
+        const a = inPath ? 0.16 + cellHash(ix, iy, 8) * 0.20 : 0.05 + cellHash(ix, iy, 8) * 0.11;
+        ctx.fillStyle = inPath ? `rgba(255, 220, 140, ${a.toFixed(3)})` : `rgba(235, 252, 255, ${a.toFixed(3)})`;
+        ctx.beginPath(); ctx.ellipse(fx, fy, rx, Math.max(0.5, rx * 0.30), 0, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+  }
+
+  // Per-frame water life: a sparse TWINKLE over the same fixed screen
+  // grid as the baked flecks. Positions and sizes are pure functions
+  // of the screen cell; only the alpha oscillates with sim time. This
+  // function reads NOTHING from the camera or the plane — pitch,
+  // roll, altitude and position cannot move a single fleck. (The old
+  // world-space glitter projected y=0 cells through the camera, so
+  // the whole field slid with camera pitch and compressed with
+  // camera altitude: the sea visibly followed the plane on Y.)
   drawGlitter(state) {
     const { ctx } = this;
-    const cam = this.cam;
-    const cell = 46, range = 700;
-    const cx0 = Math.floor((cam.x - range) / cell), cx1 = Math.floor((cam.x + range) / cell);
-    const cz0 = Math.floor((cam.z - range) / cell), cz1 = Math.floor((cam.z + range) / cell);
+    const hy = H * 0.5;
+    const cellW = 44, cellH = 26;
+    const rows = Math.ceil((H - hy) / cellH), cols = Math.ceil(W / cellW);
     ctx.save();
-    for (let ix = cx0; ix <= cx1; ix++) {
-      for (let iz = cz0; iz <= cz1; iz++) {
-        const h1 = Math.sin(ix * 127.1 + iz * 311.7) * 43758.5453;
-        const fx = (h1 - Math.floor(h1)) - 0.5;
-        const h2 = Math.sin(ix * 269.5 + iz * 183.3) * 28001.8384;
-        const fz = (h2 - Math.floor(h2)) - 0.5;
-        const wx = (ix + 0.5 + fx * 0.7) * cell;
-        const wz = (iz + 0.5 + fz * 0.7) * cell;
-        const p = this.project(wx, 0, wz);
-        if (!p || p.x < -20 || p.x > W + 20 || p.y < H * 0.47 || p.y > H + 10) continue;
-        const phase = (h1 - Math.floor(h1)) * 6.28 + (h2 - Math.floor(h2)) * 3.1;
-        const shimmer = 0.55 + 0.45 * Math.sin(state.time * 1.5 + phase);
-        // Golden path: cells near the line from the camera to the sun.
-        let gold = 0;
-        const t = (wz - cam.z) / (SUN.z - cam.z);
-        if (t > 0.02 && t < 1.7) {
-          const pathX = cam.x + (SUN.x - cam.x) * t;
-          const d = Math.abs(wx - pathX);
-          gold = clamp(1 - d / (46 + 130 * t), 0, 1);
-        }
-        const a = (0.05 + 0.16 * shimmer) * (1 + gold * 1.6);
-        ctx.fillStyle = gold > 0.35
-          ? `rgba(255, 216, 130, ${a.toFixed(3)})`
-          : `rgba(235, 252, 255, ${a.toFixed(3)})`;
-        const rx = clamp(1.7 * p.s, 0.8, 6.5) * (1 + gold * 0.5);
-        ctx.beginPath(); ctx.ellipse(p.x, p.y, rx, Math.max(0.5, rx * 0.30), 0, 0, Math.PI * 2); ctx.fill();
+    for (let iy = 0; iy < rows; iy++) {
+      const depthT = iy / Math.max(1, rows - 1);
+      for (let ix = 0; ix < cols; ix++) {
+        if (cellHash(ix, iy, 4) < 0.80) continue; // sparse subset twinkles
+        const phase = cellHash(ix, iy, 5) * 6.283;
+        const s = Math.sin(state.time * 1.5 + phase);
+        const a = s > 0 ? Math.pow(s, 3) * 0.5 : 0;
+        if (a < 0.02) continue;
+        const fx = ix * cellW + 5 + cellHash(ix, iy, 2) * (cellW - 10);
+        const fy = hy + iy * cellH + 4 + cellHash(ix, iy, 3) * (cellH - 8);
+        const rx = (1.4 + depthT * 3.4) * (0.6 + cellHash(ix, iy, 6) * 0.9);
+        const inPath = Math.abs(fx - SUN_PATH_X) < 185 * (0.4 + depthT * 0.7);
+        ctx.fillStyle = inPath ? `rgba(255, 226, 150, ${a.toFixed(3)})` : `rgba(240, 253, 255, ${a.toFixed(3)})`;
+        ctx.beginPath(); ctx.ellipse(fx, fy, rx, Math.max(0.5, rx * 0.30), 0, 0, Math.PI * 2); ctx.fill();
       }
     }
     ctx.restore();
