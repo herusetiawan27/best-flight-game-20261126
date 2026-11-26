@@ -13,7 +13,7 @@
 //   rings    : 240 steps (~4.0 s) — plane placed mid-strait before the
 //              run, autopilot lines up on the ring sequence; several
 //              rings visible ahead with the lighthouse island in frame.
-//   approach : 380 steps (~6.3 s) — plane placed on final, aligned with
+//   approach : 430 steps (~7.2 s) — plane placed on final, intercepting
 //              the runway centreline, descending gently; by the last frame
 //              the strip is fully ahead of it, big and unmissable.
 //   title    :  90 steps (~1.5 s) — like cover, then the title overlay
@@ -23,7 +23,7 @@ import { START } from './config.js';
 export const SHOT_SCENES = {
   cover: { steps: 100 },
   rings: { steps: 240 },
-  approach: { steps: 380 },
+  approach: { steps: 430 },
   title: { steps: 90 },
 };
 
@@ -56,11 +56,11 @@ export function setupShotScene(game, scene) {
     game.elapsed = 38;
   } else if (scene === 'approach') {
     // On final: south of the runway, low and slowing, autopilot flies the
-    // descent to the threshold. The plane starts ~45 m east of the
+    // descent to the threshold. The plane starts ~90 m east of the
     // centreline so the strip reads ahead beside the nose (not hidden
     // behind the fuselage) while the autopilot corrects back onto it.
     const ap = world.runway.approach;
-    plane.x = ap.x + 45;
+    plane.x = ap.x + 90;
     plane.z = ap.z + 60;
     plane.y = ap.y + 8;
     plane.heading = 0;
