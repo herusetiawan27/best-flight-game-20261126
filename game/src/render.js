@@ -8,8 +8,10 @@ import { clamp, angDiff } from './random.js';
 export class Renderer {
   constructor(ctx) { this.ctx = ctx; this.cam = null; }
 
-  // Build camera basis from plane state. Camera sits behind + above.
-  setCamera(plane) {
+  // Fallback view if no camera module state is supplied: the original
+  // locked chase pose. Normally main.js passes state.camView from
+  // camera.js (lagged chase / cockpit / orbit).
+  legacyView(plane) {
     const yaw = plane.heading;
     const cp = Math.cos(plane.pitch * 0.55), sp = Math.sin(plane.pitch * 0.55);
     const fwd = { x: Math.sin(yaw) * cp, y: sp, z: -Math.cos(yaw) * cp };
@@ -20,12 +22,12 @@ export class Renderer {
       z: right.x * fwd.y - right.y * fwd.x,
     };
     const dist = 21, height = 7.5;
-    this.cam = {
+    const cam = {
       x: plane.x - fwd.x * dist, y: plane.y - fwd.y * dist + height, z: plane.z - fwd.z * dist,
-      fwd, right, up, yaw, pitch: plane.pitch * 0.55,
+      fwd, right, up, focal: FOCAL, shakeX: 0, shakeY: 0, mode: 'chase',
     };
-    // Keep camera above the waves visually.
-    if (this.cam.y < 4) this.cam.y = 4;
+    if (cam.y < 4) cam.y = 4;
+    return cam;
   }
 
   // World point -> screen {x, y, s(scale), cz} or null if behind camera.
@@ -36,14 +38,14 @@ export class Renderer {
     const cy = dx * c.up.x + dy * c.up.y + dz * c.up.z;
     const cz = dx * c.fwd.x + dy * c.fwd.y + dz * c.fwd.z;
     if (cz < 2) return null;
-    const s = FOCAL / cz;
-    return { x: W / 2 + cx * s, y: H / 2 - cy * s, s, cz };
+    const s = c.focal / cz;
+    return { x: W / 2 + cx * s + (c.shakeX || 0), y: H / 2 - cy * s + (c.shakeY || 0), s, cz };
   }
 
   render(state) {
     const { ctx } = this;
     const { world, plane, time } = state;
-    this.setCamera(plane);
+    this.cam = state.camView || this.legacyView(plane);
     this.drawSky(state);
     this.drawSea(state);
 
@@ -70,8 +72,12 @@ export class Renderer {
       else if (it.kind === 'cloud') this.drawCloud(it.o);
     }
 
-    this.drawPlane(state);
-    this.drawPanel(state);
+    if (state.camMode === 'cockpit') {
+      this.drawCockpit(state);
+    } else {
+      this.drawPlane(state);
+      this.drawPanel(state);
+    }
     this.drawHUD(state);
     if (state.flash > 0) { // golden flash on ring pass
       ctx.fillStyle = `rgba(255, 210, 90, ${state.flash * 0.22})`;
@@ -708,6 +714,51 @@ export class Renderer {
     ctx.restore();
   }
 
+
+  // Cockpit view: the plane sprite is replaced by a windshield frame,
+  // a dashboard hump and the instrument panel drawn larger.
+  drawCockpit(state) {
+    const { ctx } = this;
+    ctx.save();
+    // Dashboard hump across the bottom.
+    const dash = ctx.createLinearGradient(0, H - 210, 0, H);
+    dash.addColorStop(0, '#131c26'); dash.addColorStop(1, '#05090f');
+    ctx.fillStyle = dash;
+    ctx.beginPath();
+    ctx.moveTo(0, H);
+    ctx.lineTo(0, H - 118);
+    ctx.quadraticCurveTo(W * 0.5, H - 178, W, H - 118);
+    ctx.lineTo(W, H);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 210, 90, 0.35)'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, H - 118);
+    ctx.quadraticCurveTo(W * 0.5, H - 178, W, H - 118);
+    ctx.stroke();
+    // Windshield pillars + top frame.
+    ctx.fillStyle = '#0a1119';
+    ctx.beginPath(); // left pillar
+    ctx.moveTo(0, 0); ctx.lineTo(120, 0); ctx.lineTo(64, H - 130); ctx.lineTo(0, H - 90);
+    ctx.closePath(); ctx.fill();
+    ctx.beginPath(); // right pillar
+    ctx.moveTo(W, 0); ctx.lineTo(W - 120, 0); ctx.lineTo(W - 64, H - 130); ctx.lineTo(W, H - 90);
+    ctx.closePath(); ctx.fill();
+    ctx.fillRect(0, 0, W, 34); // top bar
+    // Centre post hint + compass ball on the dash.
+    ctx.fillStyle = '#ffd257';
+    ctx.beginPath(); ctx.arc(W / 2, H - 158, 7, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#0a1119';
+    ctx.font = 'bold 9px monospace'; ctx.textAlign = 'center';
+    ctx.fillText('N', W / 2, H - 155);
+    ctx.restore();
+    // Instruments, larger: scale the standard panel up around its base.
+    ctx.save();
+    ctx.translate(W / 2, H);
+    ctx.scale(1.3, 1.3);
+    ctx.translate(-W / 2, -H);
+    this.drawPanel(state);
+    ctx.restore();
+  }
 
   // ---- Instrument panel + HUD -------------------------------------------
   drawPanel(state) {

@@ -7,6 +7,7 @@ import { Renderer } from './render.js';
 import { Input } from './input.js';
 import { AudioEngine } from './audio.js';
 import { stepFlight } from './physics.js';
+import { Camera } from './camera.js';
 import { clamp, angDiff } from './random.js';
 import { parseShotParams, setupShotScene } from './shots.js';
 
@@ -22,6 +23,8 @@ class Game {
     this.world = buildWorld(seed);
     this.renderer = new Renderer(ctx);
     this.audio = new AudioEngine();
+    this.camera = new Camera();
+    this.frameDt = 1 / 60;
     this.input = shot ? null : new Input(canvas);
     this.reset();
     this.mode = 'title'; // title | playing | paused | success | crashed
@@ -218,11 +221,17 @@ class Game {
       currentRing: this.currentRing, totalRings: this.world.rings.length,
       phase: this.phase, vs: this.vs, stalled: this.stalled,
       target: this.target, muted: this.audio.muted,
+      camMode: this.camera.mode,
       gearNote: this.phase === 'runway' ? 'READY TO LAND' : 'FLOATS DOWN',
     };
   }
 
-  render() { this.renderer.render(this.renderState()); }
+  render() {
+    const snap = this.mode === 'shot';
+    const st = this.renderState();
+    st.camView = this.camera.update(this.plane, snap ? 0 : this.frameDt, this.time, snap);
+    this.renderer.render(st);
+  }
 
   // --- Overlay screens ------------------------------------------------------
   overlayTitle() {
@@ -319,6 +328,7 @@ if (shot) {
     let dt = (now - last) / 1000;
     last = now;
     if (dt > 0.1) dt = 0.1;
+    game.frameDt = dt;
 
     const inp = game.input;
     // One-shot keys.
@@ -336,6 +346,7 @@ if (shot) {
       else if (game.mode === 'paused') game.mode = 'playing';
     }
     if (inp.takePressed('m') || inp.takePressed('M')) game.audio.toggleMute();
+    if (inp.takePressed('c') || inp.takePressed('C')) game.camera.cycle();
     inp.clearPressed();
 
     if (game.mode === 'playing') {
