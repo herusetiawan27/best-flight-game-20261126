@@ -2,7 +2,7 @@
 // on Canvas 2D. Camera chases the plane; the plane itself is drawn as a
 // detailed 2D seaplane in the centre of the frame (banking with roll),
 // with a glowing instrument panel overlaid at the bottom.
-import { W, H, FOCAL } from './config.js';
+import { W, H, FOCAL, EFFECTS } from './config.js';
 import { clamp, angDiff } from './random.js';
 
 export class Renderer {
@@ -59,7 +59,12 @@ export class Renderer {
     for (const b of world.boats) items.push({ d: camZ(b.x, b.z), kind: 'boat', o: b });
     items.push({ d: camZ(world.lighthouse.x, world.lighthouse.z), kind: 'lighthouse', o: world.lighthouse });
     items.push({ d: camZ(world.runway.x, world.runway.z), kind: 'runway', o: world.runway });
-    world.rings.forEach((r, idx) => { if (!r.passed) items.push({ d: camZ(r.x, r.z), kind: 'ring', o: r, idx }); });
+    world.rings.forEach((r, idx) => {
+      // Passed rings stay in the draw list briefly for the pulse-out.
+      if (!r.passed || state.time - (r.passAt ?? -99) < 0.55) {
+        items.push({ d: camZ(r.x, r.z), kind: 'ring', o: r, idx });
+      }
+    });
     for (const cl of world.clouds) items.push({ d: camZ(cl.x, cl.z), kind: 'cloud', o: cl });
     items.sort((a, b) => b.d - a.d);
     for (const it of items) {
@@ -72,13 +77,20 @@ export class Renderer {
       else if (it.kind === 'cloud') this.drawCloud(it.o);
     }
 
+    if (state.fx) {
+      this.drawRipples(state);
+      this.drawParticles(state);
+    }
+
     if (state.camMode === 'cockpit') {
       this.drawCockpit(state);
     } else {
       this.drawPlane(state);
       this.drawPanel(state);
     }
+    this.drawSpeedLines(state);
     this.drawHUD(state);
+    if (state.fx) this.drawPopups(state);
     if (state.flash > 0) { // golden flash on ring pass
       ctx.fillStyle = `rgba(255, 210, 90, ${state.flash * 0.22})`;
       ctx.fillRect(0, 0, W, H);
@@ -332,16 +344,16 @@ export class Renderer {
     }
   }
 
-  ringPoints(r) {
+  ringPoints(r, scale = 1) {
     // Ring plane: vertical axis Y, horizontal axis perpendicular to course heading.
     const hx = Math.cos(r.heading), hz = Math.sin(r.heading);
     const pts = [];
     const N = 30;
     for (let i = 0; i <= N; i++) {
       const a = (i / N) * Math.PI * 2;
-      const px = r.x + hx * Math.cos(a) * r.r;
-      const py = r.y + Math.sin(a) * r.r;
-      const pz = r.z + hz * Math.cos(a) * r.r;
+      const px = r.x + hx * Math.cos(a) * r.r * scale;
+      const py = r.y + Math.sin(a) * r.r * scale;
+      const pz = r.z + hz * Math.cos(a) * r.r * scale;
       pts.push(this.project(px, py, pz));
     }
     return pts;
@@ -349,10 +361,27 @@ export class Renderer {
 
   drawRing(r, state, isTarget) {
     const { ctx } = this;
-    const pts = this.ringPoints(r);
-    if (pts.some((p) => !p)) return;
     const centre = this.project(r.x, r.y, r.z);
     if (!centre || centre.cz > 2600) return;
+    if (r.passed) {
+      // Pulse-out: the ring you just threaded blooms and fades.
+      const age = state.time - (r.passAt ?? state.time);
+      if (age > 0.55) return;
+      const pts = this.ringPoints(r, 1 + age * 2.4);
+      if (pts.some((p) => !p)) return;
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, 1 - age / 0.55);
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = 'rgba(255, 214, 90, 0.9)';
+      ctx.lineWidth = Math.max(1.5, centre.s * 2.2);
+      ctx.beginPath();
+      pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+      ctx.stroke();
+      ctx.restore();
+      return;
+    }
+    const pts = this.ringPoints(r);
+    if (pts.some((p) => !p)) return;
     const pulse = isTarget ? 1 + 0.06 * Math.sin(state.time * 6) : 1;
     ctx.save();
     ctx.lineJoin = 'round';
@@ -383,6 +412,94 @@ export class Renderer {
         ctx.closePath(); ctx.fill(); ctx.stroke();
       }
     }
+  }
+
+  // ---- Effects layer (world-space, from effects.js) ----------------------
+  drawRipples(state) {
+    const { ctx } = this;
+    ctx.save();
+    for (const r of state.fx.ripples) {
+      const c = this.project(r.x, 0.4, r.z);
+      if (!c) continue;
+      const t = r.age / r.life;
+      const rx = Math.min(240, r.maxR * t * c.s);
+      if (rx < 2) continue;
+      ctx.strokeStyle = `rgba(230, 250, 252, ${(1 - t) * 0.42})`;
+      ctx.lineWidth = Math.max(1, 2.2 * (1 - t));
+      ctx.beginPath(); ctx.ellipse(c.x, c.y, rx, rx * 0.30, 0, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  drawParticles(state) {
+    const { ctx } = this;
+    ctx.save();
+    for (const pt of state.fx.particles) {
+      if (!pt.alive) continue;
+      const p = this.project(pt.x, pt.y, pt.z);
+      if (!p) continue;
+      const t = pt.age / pt.life;
+      const size = clamp(pt.size * (1 + pt.grow * pt.age), 0.3, 12) * p.s * 0.10;
+      if (size < 0.5) continue;
+      ctx.fillStyle = `rgba(${pt.r},${pt.g},${pt.b},${(pt.alpha * (1 - t)).toFixed(3)})`;
+      ctx.beginPath(); ctx.arc(p.x, p.y, Math.min(size, 9), 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  drawPopups(state) {
+    const { ctx } = this;
+    ctx.save();
+    ctx.textAlign = 'center';
+    for (const pp of state.fx.popups) {
+      const p = this.project(pp.x, pp.y, pp.z);
+      if (!p) continue;
+      const t = pp.age / pp.life;
+      const alpha = t < 0.1 ? t / 0.1 : t > 0.62 ? Math.max(0, 1 - (t - 0.62) / 0.38) : 1;
+      const y = p.y - pp.age * 54;
+      const fs = clamp(p.s * 1.15, 16, 37);
+      ctx.globalAlpha = alpha;
+      ctx.font = `bold ${fs}px monospace`;
+      ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(20, 30, 10, 0.65)';
+      ctx.strokeText(pp.text, p.x, y);
+      ctx.fillStyle = '#fff3b0';
+      ctx.fillText(pp.text, p.x, y);
+      if (pp.sub) {
+        ctx.font = `bold ${Math.round(fs * 0.62)}px monospace`;
+        ctx.lineWidth = 3;
+        ctx.strokeText(pp.sub, p.x, y + fs * 0.78);
+        ctx.fillStyle = '#ffd257';
+        ctx.fillText(pp.sub, p.x, y + fs * 0.78);
+      }
+    }
+    ctx.restore();
+  }
+
+  // Streaks at the frame edges that fade in at high speed.
+  drawSpeedLines(state) {
+    const sp = state.plane.speed;
+    const t = clamp((sp - EFFECTS.speedLineSpeed) / (78 - EFFECTS.speedLineSpeed), 0, 1);
+    if (t <= 0 || state.camMode === 'cockpit') return;
+    const { ctx } = this;
+    ctx.save();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineCap = 'round';
+    const tick = Math.floor(state.time * 9);
+    for (let i = 0; i < 14; i++) {
+      const h1 = Math.sin(i * 127.1 + tick * 311.7) * 43758.5453;
+      const fy = (h1 - Math.floor(h1));
+      const h2 = Math.sin(i * 269.5 + tick * 183.3) * 28001.8384;
+      const fl = (h2 - Math.floor(h2));
+      const y = 60 + fy * (H - 200);
+      const len = (50 + fl * 120) * t;
+      const left = i % 2 === 0;
+      const x0 = left ? 6 : W - 6;
+      const x1 = left ? 6 + len : W - 6 - len;
+      ctx.globalAlpha = (0.05 + fl * 0.13) * t;
+      ctx.lineWidth = 1.6 + fl * 1.6;
+      ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+    }
+    ctx.restore();
   }
 
   drawCloud(cl) {

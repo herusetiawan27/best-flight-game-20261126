@@ -1,13 +1,14 @@
 // Golden Strait Run — main game logic: flight model, ring course,
 // landing / crash rules, screens, autopilot (for screenshot mode),
 // and the normal requestAnimationFrame loop.
-import { W, H, START, LANDING } from './config.js';
+import { W, H, START, LANDING, EFFECTS } from './config.js';
 import { buildWorld, groundHeightAt, overRunway } from './world.js';
 import { Renderer } from './render.js';
 import { Input } from './input.js';
 import { AudioEngine } from './audio.js';
 import { stepFlight } from './physics.js';
 import { Camera } from './camera.js';
+import { Effects } from './effects.js';
 import { clamp, angDiff } from './random.js';
 import { parseShotParams, setupShotScene } from './shots.js';
 
@@ -24,6 +25,7 @@ class Game {
     this.renderer = new Renderer(ctx);
     this.audio = new AudioEngine();
     this.camera = new Camera();
+    this.fx = new Effects();
     this.frameDt = 1 / 60;
     this.input = shot ? null : new Input(canvas);
     this.reset();
@@ -33,7 +35,8 @@ class Game {
 
   reset() {
     const w = this.world;
-    for (const r of w.rings) { r.passed = false; r.hit = false; }
+    for (const r of w.rings) { r.passed = false; r.hit = false; r.passAt = -99; }
+    this.fx.clear();
     this.plane = {
       x: START.x, y: START.y, z: START.z,
       heading: START.heading, pitch: 0, roll: 0,
@@ -52,6 +55,20 @@ class Game {
     this.crashReason = '';
     this.finalTime = 0;
     this.ringsHit = 0;
+    // Combo streak: consecutive rings inside the combo window.
+    this.streak = 0;
+    this.maxStreak = 0;
+    this.lastRingAt = -99;
+    // Landing roll-out state.
+    this.landingT = 0;
+    this.bounceV = 0;
+    this.rating = '';
+    this.medal = '';
+  }
+
+  // Combo currently shown: the streak dies when the window lapses.
+  get comboActive() {
+    return (this.time - this.lastRingAt <= EFFECTS.comboWindow) ? this.streak : 0;
   }
 
   get target() {
@@ -65,6 +82,7 @@ class Game {
 
   // --- Flight simulation, one fixed step of dt seconds. ------------------
   step(dt, ctrl) {
+    if (this.mode === 'landing') { this.updateRollout(dt); return; }
     // The arcade flight model lives in physics.js (angular-velocity
     // handling, thrust/drag, turn coordination, stall, auto-level).
     stepFlight(this, dt, ctrl);
@@ -72,9 +90,43 @@ class Game {
     if (this.mode === 'playing') this.elapsed += dt;
     this.time += dt;
     this.flash = Math.max(0, this.flash - dt * 2.2);
+    this.fx.update(dt, this);
 
     this.checkRings();
     this.checkGround();
+  }
+
+  // Touchdown roll-out: the plane floats on the strip, bounces softly,
+  // throws spray, and decelerates to taxi speed before the results.
+  updateRollout(dt) {
+    const p = this.plane;
+    const rw = this.world.runway;
+    this.time += dt;
+    this.landingT += dt;
+    p.throttle = Math.max(0, p.throttle - dt * 1.4);
+    p.speed = Math.max(0, p.speed - LANDING.decel * dt);
+    p.pitch += (0 - p.pitch) * Math.min(1, dt * 5);
+    p.roll += (0 - p.roll) * Math.min(1, dt * 5);
+    p.pitchVel = 0; p.rollVel = 0;
+    // Bounce: springy float contact, damped.
+    const groundY = rw.y + 1.1;
+    this.bounceV -= 26 * dt;
+    p.y += this.bounceV * dt;
+    if (p.y <= groundY) {
+      p.y = groundY;
+      this.bounceV = Math.abs(this.bounceV) > 0.9 ? -this.bounceV * 0.38 : 0;
+      if (this.bounceV !== 0) this.fx.splash(p.x, rw.y + 0.3, p.z, 10, 0.5);
+    }
+    const fx = Math.sin(p.heading), fz = -Math.cos(p.heading);
+    p.x += fx * p.speed * dt;
+    p.z += fz * p.speed * dt;
+    this.vs = 0;
+    this.fx.update(dt, this);
+    if (this.landingT >= LANDING.rolloutTime) {
+      this.mode = 'success';
+      this.audio.success();
+      this.audio.setEngine(0, 0);
+    }
   }
 
   checkRings() {
@@ -91,16 +143,29 @@ class Game {
     const lateral = Math.sqrt(dx * dx + dy * dy);
     if ((crossed && lateral < ring.r) || dist3 < ring.r * 0.8) {
       ring.passed = true; ring.hit = true;
-      const bonus = Math.round(60 * Math.max(0, 1 - lateral / ring.r));
-      this.score += 100 + bonus;
+      ring.passAt = this.time;
+      // Combo streak: chained rings inside the window raise the ding
+      // pitch and pay a growing bonus.
+      this.streak = (this.time - this.lastRingAt <= EFFECTS.comboWindow) ? this.streak + 1 : 1;
+      this.lastRingAt = this.time;
+      this.maxStreak = Math.max(this.maxStreak, this.streak);
+      const centreBonus = Math.round(60 * Math.max(0, 1 - lateral / ring.r));
+      const comboBonus = EFFECTS.comboScoreStep * (this.streak - 1);
+      const points = 100 + centreBonus + comboBonus;
+      this.score += points;
       this.ringsHit++;
       this.flash = 1;
-      this.message = `RING ${this.currentRing + 1}  +${100 + bonus}`;
-      this.audio.chime();
+      this.message = `RING ${this.currentRing + 1}  +${points}`;
+      this.fx.burst(ring.x, ring.y, ring.z);
+      this.fx.popup(ring.x, ring.y + ring.r * 0.55, ring.z,
+        `+${points}`, this.streak >= 2 ? `COMBO ×${this.streak}` : '');
+      this.audio.ding(this.streak - 1);
       this.advanceRing();
     } else if (p.z < ring.z - 46 || dist3 > 700) {
       // Flew well past it: missed, move on (only current ring counts).
       ring.passed = true; ring.hit = false;
+      ring.passAt = this.time;
+      this.streak = 0;
       this.audio.miss();
       this.advanceRing();
     }
@@ -113,29 +178,60 @@ class Game {
     if (this.currentRing >= this.world.rings.length) this.phase = 'runway';
   }
 
+  // Difficulty-scaled landing limits (set by applyDifficulty; defaults
+  // are the raw LANDING config).
+  landLimits() {
+    return this.landCfg || {
+      maxSpeed: LANDING.maxSpeed, minSink: LANDING.minSink, maxAlignDeg: LANDING.maxAlignDeg,
+    };
+  }
+
+  // A touchdown inside the hard limits: rate it, score it, and either
+  // start the roll-out (interactive) or finish at once (shot mode).
+  touchdown(align) {
+    const p = this.plane;
+    const L = LANDING;
+    const tdSpeed = p.speed, tdSink = this.vs;
+    this.rating =
+      (tdSpeed <= L.perfectSpeed && tdSink >= L.perfectSink && align <= 8) ? 'PERFECT' :
+      (tdSpeed <= L.goodSpeed && tdSink >= L.goodSink && align <= L.maxAlignDeg) ? 'GOOD' : 'ROUGH';
+    this.phase = 'done';
+    this.finalTime = this.elapsed;
+    const timeBonus = Math.max(0, 600 - Math.round(this.elapsed * 2));
+    const landBonus = 300 + Math.round((L.maxSpeed - tdSpeed) * 8);
+    const ratingBonus = this.rating === 'PERFECT' ? 150 : this.rating === 'GOOD' ? 75 : 0;
+    this.score += landBonus + timeBonus + ratingBonus;
+    this.fx.splash(p.x, this.world.runway.y + 0.4, p.z, 46, 1);
+    this.fx.popup(p.x, p.y + 9, p.z, this.rating === 'PERFECT' ? 'PERFECT LANDING!' : `${this.rating} LANDING`, `+${landBonus + ratingBonus}`);
+    this.audio.splash();
+    if (this.mode === 'shot') {
+      this.audio.success();
+      return; // shot mode: no roll-out, the frame is the deliverable
+    }
+    this.mode = 'landing';
+    this.landingT = 0;
+    this.bounceV = clamp(-tdSink, 0, 6.5) * LANDING.bounceGain * 2.2;
+    this.audio.setEngine(0.1, 0);
+  }
+
   checkGround() {
     if (this.mode !== 'playing' && this.mode !== 'shot') return;
+    if (this.phase === 'done') return;
     const p = this.plane;
     const rw = this.world.runway;
     const ground = groundHeightAt(this.world, p.x, p.z);
     const onRunway = overRunway(this.world, p.x, p.z);
+    const lim = this.landLimits();
 
     if (onRunway && p.y <= rw.y + 2.2) {
       // Touchdown judgement.
       const alignDeg = Math.abs(((p.heading * 180 / Math.PI) % 360 + 360) % 360);
       const align = Math.min(alignDeg, 360 - alignDeg);
-      const gentle = this.vs >= LANDING.minSink;
-      if (p.speed <= LANDING.maxSpeed && gentle && align <= LANDING.maxAlignDeg) {
-        this.mode = this.mode === 'shot' ? this.mode : 'success';
-        this.phase = 'done';
-        this.finalTime = this.elapsed;
-        const timeBonus = Math.max(0, 600 - Math.round(this.elapsed * 2));
-        const landBonus = 300 + Math.round((LANDING.maxSpeed - p.speed) * 8);
-        this.score += landBonus + timeBonus;
-        this.audio.success();
-        this.audio.setEngine(0, 0);
+      const gentle = this.vs >= lim.minSink;
+      if (p.speed <= lim.maxSpeed && gentle && align <= lim.maxAlignDeg) {
+        this.touchdown(align);
       } else {
-        const why = p.speed > LANDING.maxSpeed ? 'Too fast on touchdown!'
+        const why = p.speed > lim.maxSpeed ? 'Too fast on touchdown!'
           : !gentle ? 'Hard landing — slammed the runway!'
           : 'Not aligned with the runway!';
         this.doCrash(why);
@@ -152,6 +248,7 @@ class Game {
     if (this.mode === 'shot') return; // shot mode never ends on a crash
     this.mode = 'crashed';
     this.crashReason = reason;
+    this.fx.splash(this.plane.x, Math.max(0.5, this.plane.y - 2), this.plane.z, 50, 1.2);
     this.audio.crash();
     this.audio.setEngine(0, 0);
   }
@@ -222,6 +319,12 @@ class Game {
       phase: this.phase, vs: this.vs, stalled: this.stalled,
       target: this.target, muted: this.audio.muted,
       camMode: this.camera.mode,
+      fx: this.fx, combo: this.comboActive, maxStreak: this.maxStreak,
+      rating: this.rating, medal: this.medal,
+      difficulty: this.difficulty || 'normal',
+      best: this.best || null,
+      countdown: this.countdown || 0,
+      touch: this.input ? this.input.touch : null,
       gearNote: this.phase === 'runway' ? 'READY TO LAND' : 'FLOATS DOWN',
     };
   }
@@ -349,11 +452,14 @@ if (shot) {
     if (inp.takePressed('c') || inp.takePressed('C')) game.camera.cycle();
     inp.clearPressed();
 
-    if (game.mode === 'playing') {
+    if (game.mode === 'playing' || game.mode === 'landing') {
       acc += dt;
-      const ctrl = game.readControls(now);
+      const ctrl = game.autoMode ? game.autopilot() : game.readControls(now);
       while (acc >= STEP) { game.step(STEP, ctrl); acc -= STEP; }
       game.audio.setEngine(game.plane.throttle, game.plane.speed / 78);
+      const gH = groundHeightAt(game.world, game.plane.x, game.plane.z);
+      const prox = gH <= 0.6 ? clamp(1 - Math.max(0, game.plane.y - gH) / 26, 0, 1) : 0;
+      game.audio.setWater(prox * clamp(game.plane.speed / 30, 0.25, 1));
     } else {
       // Title / end screens: gentle idle drift so the scene stays alive.
       game.time += dt;
