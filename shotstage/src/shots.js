@@ -13,9 +13,9 @@
 //   rings    : 240 steps (~4.0 s) — plane placed mid-strait before the
 //              run, autopilot lines up on the ring sequence; several
 //              rings visible ahead with the lighthouse island in frame.
-//   approach : 560 steps (~9.3 s) — plane placed on final, aligned with
+//   approach : 380 steps (~6.3 s) — plane placed on final, aligned with
 //              the runway centreline, descending gently; by the last frame
-//              it is close in, runway big and unmissable ahead.
+//              the strip is fully ahead of it, big and unmissable.
 //   title    :  90 steps (~1.5 s) — like cover, then the title overlay
 //              is rendered over the live scene.
 import { START } from './config.js';
@@ -23,7 +23,7 @@ import { START } from './config.js';
 export const SHOT_SCENES = {
   cover: { steps: 100 },
   rings: { steps: 240 },
-  approach: { steps: 560 },
+  approach: { steps: 380 },
   title: { steps: 90 },
 };
 
