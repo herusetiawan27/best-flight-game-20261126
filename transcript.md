@@ -77,7 +77,7 @@ instruments lit, ring/runway ahead, HUD altitude/speed/heading readable):
 
 - main.ts (95 lines) — hand-in entrypoint
 - vendor/makefun-game.ts — dossier library, unchanged
-- game/index.html + game/src/*.js (8 modules, 59,566 bytes total)
+- game/index.html + game/src/*.js (8 modules; game/ tree 59,787 bytes total)
 - screenshots/1-cover.jpg … 4-title.jpg
 - README.md, LICENSE (MIT), .gitignore
 
