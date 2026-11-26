@@ -170,11 +170,78 @@ sea calm and static-looking, HUD and scenes unchanged:
 - screenshots/3-approach.jpg — 1078×606, 84,949 bytes
 - screenshots/4-title.jpg — 1078×606, 109,950 bytes
 
+## Overhaul — physics, camera, juice, world, UI (26 Nov, later)
+
+The user, an experienced player, found the game stiff and lifeless and
+issued a full senior-dev upgrade spec. Implemented in stages, each one
+gated by the headless autopilot (12/12 rings + successful landing
+before moving on):
+
+- **Stage 1 — handling** (new physics.js, one CONFIG object in
+  config.js): inputs now drive smoothed angular velocity with damping,
+  soft attitude caps and gentle auto-level; banking is turn-coordinated
+  (roll bleeds into yaw); speed is a thrust/drag chase of the throttle
+  with pitch↔speed energy exchange; below 24 m/s lift fades, the nose
+  drops and she sinks — a light, readable stall. The autopilot was
+  rewritten to fly attitude targets through the same model.
+- **Stage 2 — camera** (new camera.js): spring-lag chase camera, FOV
+  that widens as the throttle opens past 55%, boost shake above 86%,
+  and C cycles chase / cockpit (plane hidden, cockpit frame, enlarged
+  instruments) / orbit (slow circling side view, still flyable).
+  Snap mode keeps shot scenes pixel-deterministic.
+- **Stage 3 — juice** (new effects.js, audio.js rewritten): ring pass =
+  pulse + 46-particle gold burst + floating score popup + a ding that
+  rises two semitones per combo step; combo streaks multiply the score;
+  passed rings dim, the next ring glows brighter with an on-screen
+  chevron; wingtip contrails; low passes throw water spray and
+  expanding ripples; speed lines past 62 m/s. Touchdown throws foam,
+  the plane bounces and decelerates through a roll-out, and the run is
+  rated PERFECT / GOOD / ROUGH. Audio is all WebAudio synth: engine
+  (pitch follows throttle), wind (speed), water laps (proximity), a
+  relaxed Am–F–C–G ambient pad, plus ding/splash/crash.
+- **Stage 4 — world & UI** (new ui.js, world.js/render.js): bigger sun
+  with a horizontal flare, horizon fog, and the sea sparkle is now
+  WORLD-space glitter with a golden reflection path under the sun —
+  animated shimmer tied to world position and time, while the base
+  water layer still never slides or rolls with steering (the round-4
+  guarantee holds: glitter is anchored to world cells, not the
+  screen). Two cliff islets, three bird flocks, bobbing boats,
+  drifting clouds. HUD gained ring-progress pips, a mini-compass with
+  target bearing, and a combo readout; title screen offers Santai /
+  Normal / Pro (ring size, assist strength, landing strictness);
+  3-2-1 countdown; pause menu; results screen with medal (Bronze /
+  Silver / Gold from time, rings and combo) and instant "Coba lagi";
+  best score in localStorage; mobile touch controls (floating
+  joystick + throttle slider); T runs the autopilot demo and logs the
+  result. Ghost run: deliberately skipped — the plane is a
+  screen-space sprite, so a projected ghost would need a drawPlane
+  refactor; the spec allowed the skip.
+- **Verification**: autopilot lands 12/12 on ALL THREE difficulties
+  (Normal: score 4,397 in 60 s, GOOD rating, GOLD medal). Smoke tests
+  cover R restart, P pause, M mute, C camera cycle, T autopilot,
+  difficulty keys, countdown, touch joystick/throttle maths, and
+  shot-mode determinism (each scene rendered twice through
+  node-canvas, byte-identical PNGs). Pro difficulty initially failed:
+  its touchdown speed limit sat at the stall speed, so the final could
+  not be flown — landing limits are now explicit per difficulty (Pro
+  tightens alignment and sink instead).
+
+All four screenshots were re-captured from the Pages build (fresh
+staging path shotstage8, removed afterwards; same scenes/seeds and
+crop box) and verified visually — the rings frame now shows the
+next-ring chevron, birds, a cliff islet and a sailboat:
+
+- screenshots/1-cover.jpg — 1078×606, 91,956 bytes
+- screenshots/2-rings.jpg — 1078×606, 99,349 bytes
+- screenshots/3-approach.jpg — 1078×606, 86,142 bytes
+- screenshots/4-title.jpg — 1078×606, 130,908 bytes
+
 ## Files
 
 - main.ts (95 lines) — hand-in entrypoint
 - vendor/makefun-game.ts — dossier library, unchanged
-- game/index.html + game/src/*.js (8 modules; game/ tree 59,787 bytes total)
+- game/index.html + game/src/*.js (12 modules after the overhaul;
+  game/ tree 130,388 bytes total, 13 files)
 - screenshots/1-cover.jpg … 4-title.jpg
 - README.md, LICENSE (MIT), .gitignore
 

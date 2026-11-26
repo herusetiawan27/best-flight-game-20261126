@@ -13,15 +13,39 @@ Built for the make.fun bounty
 
 ## The game
 
-You fly a seaplane in a chase view over the strait at golden hour. Thread the
-12 glowing golden rings in order — each one you catch scores points and buys
-time — then bring her home: line up with the runway on the coast island and
-touch down gently. Too fast, too steep, or into the sea ends the run.
+You fly a seaplane over the strait at golden hour. Thread the 12 glowing
+golden rings in order — chain them quickly to build a combo (the chime
+climbs in pitch and the score multiplies) — then bring her home: line up
+with the runway on the coast island and touch down gently. Too fast, too
+steep, or into the sea ends the run. Landings are rated PERFECT / GOOD /
+ROUGH, and every run is scored against the clock for a Bronze, Silver or
+Gold medal. Your best score is kept in the browser.
 
-The view carries a lit instrument cluster (artificial horizon, altimeter,
-airspeed) and a HUD with altitude, speed and heading, so it flies like a real
-approach, not an arcade float. Engine hum, ring chimes and the touchdown call
-are synthesised live with WebAudio — no audio files.
+The flight model is a proper little arcade sim: inputs drive smoothed
+angular velocity (never instant rotation), banking rolls the plane into
+the turn, speed trades against climb, and she stalls gently if you get
+slow. The chase camera lags behind the plane on springs, the view widens
+as you open the throttle, and C switches between chase, cockpit and a
+slow orbit camera.
+
+The world is alive: a big low sun with a golden glitter path on the
+water, drifting clouds, cliff islets, bobbing boats and wheeling birds.
+Passing a ring bursts into sparks with a floating score popup; skimming
+the water throws spray and ripples; your wingtips trail contrails at
+speed. The view carries a lit instrument cluster (artificial horizon,
+altimeter, airspeed), a HUD with altitude, speed and heading, ring
+progress pips and a mini-compass. Engine, wind, water and a relaxed
+ambient pad are synthesised live with WebAudio — no audio files.
+
+## Difficulty
+
+Pick on the title screen (keys 1 / 2 / 3, or tap a pill):
+
+| Difficulty | Rings | Assist | Landing judge |
+| --- | --- | --- | --- |
+| Santai | Bigger | Strong auto-level | Lenient |
+| Normal | Standard | Standard | Standard |
+| Pro | Smaller | Weak | Tight alignment & sink |
 
 ## Controls
 
@@ -31,10 +55,14 @@ are synthesised live with WebAudio — no audio files.
 | Arrow Left / Right, A / D | Roll / turn |
 | W / S | Throttle up / down |
 | Mouse move | Steer toward the pointer |
-| Enter / click | Start |
-| R | Restart |
+| C | Camera: chase / cockpit / orbit |
+| T | Autopilot demo (logs its result to the console) |
+| 1 / 2 / 3 | Difficulty: Santai / Normal / Pro |
+| Enter / click | Start / "Coba lagi" |
+| R | Restart instantly |
 | P | Pause |
 | M | Mute |
+| Touch | Left thumb: virtual stick · right thumb: throttle slider |
 
 ## Run it
 
@@ -70,5 +98,7 @@ using `buildDossier` from `vendor/makefun-game.ts`.
 - `main.ts` — entrypoint: assembles the hand-in and writes `dossier.json`
 - `vendor/makefun-game.ts` — make.fun dossier library (vendored, unchanged)
 - `game/` — the game: `index.html` + ES modules under `game/src/`
+  (`config`, `physics`, `camera`, `effects`, `audio`, `ui`, `input`,
+  `world`, `render`, `shots`, `random`, `main`)
 - `screenshots/` — four real renders of the game (the first is the cover)
 - `LICENSE` — MIT
