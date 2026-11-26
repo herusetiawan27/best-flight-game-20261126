@@ -1,11 +1,12 @@
 // Golden Strait Run — main game logic: flight model, ring course,
 // landing / crash rules, screens, autopilot (for screenshot mode),
 // and the normal requestAnimationFrame loop.
-import { W, H, START, FLIGHT, LANDING } from './config.js';
+import { W, H, START, LANDING } from './config.js';
 import { buildWorld, groundHeightAt, overRunway } from './world.js';
 import { Renderer } from './render.js';
 import { Input } from './input.js';
 import { AudioEngine } from './audio.js';
+import { stepFlight } from './physics.js';
 import { clamp, angDiff } from './random.js';
 import { parseShotParams, setupShotScene } from './shots.js';
 
@@ -33,8 +34,10 @@ class Game {
     this.plane = {
       x: START.x, y: START.y, z: START.z,
       heading: START.heading, pitch: 0, roll: 0,
+      pitchVel: 0, rollVel: 0,
       speed: START.speed, throttle: 0.62,
     };
+    this.assist = 1;         // difficulty assist multiplier (physics)
     this.vs = 0;             // vertical speed m/s
     this.currentRing = 0;
     this.phase = 'rings';    // rings | runway | done
@@ -59,44 +62,9 @@ class Game {
 
   // --- Flight simulation, one fixed step of dt seconds. ------------------
   step(dt, ctrl) {
-    const p = this.plane;
-    const F = FLIGHT;
-
-    // Controls -> attitude. Attitude eases exponentially toward the
-    // input target: it answers immediately (no rate cap to wait for),
-    // settles without a snap, and auto-levels when the input is
-    // released because the target falls back to level flight.
-    p.throttle = clamp(p.throttle + ctrl.throttle * dt * 0.55, 0, 1);
-    const pitchInput = clamp(ctrl.pitch, -1, 1);
-    const rollInput = clamp(ctrl.roll, -1, 1);
-    const targetPitch = pitchInput * F.maxPitch;
-    const targetRoll = rollInput * F.maxRoll;
-    const kp = 1 - Math.exp(-F.pitchResponse * dt);
-    const kr = 1 - Math.exp(-F.rollResponse * dt);
-    p.pitch += (targetPitch - p.pitch) * kp;
-    p.roll += (targetRoll - p.roll) * kr;
-
-    // Speed chases the throttle setting.
-    const targetSpeed = F.idleSpeed + p.throttle * (F.maxSpeed - F.idleSpeed);
-    p.speed += clamp(targetSpeed - p.speed, -F.accel * dt, F.accel * dt);
-    p.speed = clamp(p.speed, 6, F.maxSpeed + 6);
-
-    // Turning: banked turn, weaker at low speed.
-    p.heading += Math.sin(p.roll) * F.turnFactor * (p.speed / 40) * dt;
-
-    // Vertical: pitch drives climb; lift offsets gravity; stall-lite.
-    this.stalled = p.speed < F.stallSpeed;
-    const lift = clamp((p.speed - 12) / (F.stallSpeed - 12), 0, 1) * F.gravitySink;
-    let vs = Math.sin(p.pitch) * p.speed * 1.0 + lift - F.gravitySink;
-    if (this.stalled) vs -= (F.stallSpeed - p.speed) * 0.34; // mushy sink
-    this.vs = vs;
-
-    // Integrate position along heading.
-    const fx = Math.sin(p.heading), fz = -Math.cos(p.heading);
-    p.x += fx * Math.cos(p.pitch) * p.speed * dt;
-    p.z += fz * Math.cos(p.pitch) * p.speed * dt;
-    p.y += vs * dt;
-    if (p.y > 190) { p.y = 190; } // soft ceiling
+    // The arcade flight model lives in physics.js (angular-velocity
+    // handling, thrust/drag, turn coordination, stall, auto-level).
+    stepFlight(this, dt, ctrl);
 
     if (this.mode === 'playing') this.elapsed += dt;
     this.time += dt;
@@ -204,7 +172,10 @@ class Game {
     return c;
   }
 
-  // --- Autopilot (deterministic, used by screenshot mode) ------------------
+  // --- Autopilot (deterministic, used by screenshot mode + debug key T) ---
+  // The physics model turns input into angular velocity, so the pilot
+  // commands ATTITUDE ERRORS: desired attitude minus current attitude,
+  // scaled — the damped angular model then converges on the desire.
   autopilot() {
     const p = this.plane;
     let t = this.target;
@@ -221,18 +192,20 @@ class Game {
     const dx = t.x - p.x, dz = t.z - p.z;
     const desiredHeading = Math.atan2(dx, -dz);
     const hErr = angDiff(desiredHeading, p.heading);
-    c.roll = clamp(hErr * 1.5, -0.62, 0.62);
+    const desiredRoll = clamp(hErr * 1.5, -0.62, 0.62);
+    c.roll = clamp((desiredRoll - p.roll) * 3.2, -1, 1);
     const dist = Math.hypot(dx, dz);
     let targetY = t.y;
-    let pitchGain = 0.022;
+    let pitchGain = 0.020;
     if (this.phase === 'runway') {
       const rw = this.world.runway;
-      pitchGain = 0.032;
+      pitchGain = 0.030;
       targetY = t.y + clamp(dist * 0.07, 0, 32);
       if (p.z < rw.z + rw.length / 2) targetY = rw.y + 0.3; // over the strip: settle on it
     }
     const yErr = targetY - p.y;
-    c.pitch = clamp(yErr * pitchGain - this.vs * 0.012, -0.55, 0.6);
+    const desiredPitch = clamp(yErr * pitchGain - this.vs * 0.014, -0.5, 0.55);
+    c.pitch = clamp((desiredPitch - p.pitch) * 3.4, -1, 1);
     const targetThrottle = this.phase === 'runway' ? (dist < 300 ? 0.20 : 0.42) : 0.62;
     c.throttle = clamp((targetThrottle - p.throttle) * 3, -1, 1);
     return c;
