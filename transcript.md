@@ -87,6 +87,46 @@ wire, exhaust stubs, and a soft water shadow that shrinks and fades
 with altitude. All four screenshots were then re-captured from the
 Pages build (fresh staging path, same crop box) and verified visually.
 
+## Revision round 3 — feel, sea, total aircraft redesign (26 Nov, later)
+
+The user played the game and complained: the plane felt stiff, up/down
+steering was hard, the sea moved along with the steering, and the plane
+had to change TOTALLY. All three were fixed:
+
+- **Flight feel** (config.js, main.js): attitude no longer crawls at a
+  capped rate — pitch and roll ease exponentially toward the input
+  target (pitchResponse 8.5/s, rollResponse 10/s), so a key press
+  answers at once and settles smoothly; releasing the keys auto-levels.
+  maxPitch 0.42 → 0.50 and the pitch→climb coupling 0.92 → 1.0 make
+  up/down genuinely easy. Mouse steering gets the same smoothing. The
+  autopilot (same flight model) was re-verified headlessly against the
+  real modules: 12/12 rings and a successful landing, score 2654.
+- **Anchored sea** (render.js drawSea): the water layer is now fixed to
+  the screen — constant horizon at H/2, a gradient defined over fixed
+  screen rows, a soft haze band at the waterline, and a static
+  screen-space sparkle texture (deterministic hash of the cell). The
+  projected latitude lines that slid, rolled and bobbed with every
+  steering input are gone; islands, boats, rings and the runway still
+  move through the view exactly as before.
+- **Aircraft: total redesign** (render.js drawPlane): a new sleek
+  aerobatic seaplane drawn from scratch — deep teal + white livery
+  with orange accents (nothing like the old red/white/gold plane),
+  volumetric rounded fuselage with sun-side highlight and shaded
+  flank, a big glossy canopy, a mid wing with rounded orange-tipped
+  panels and nav lights, streamlined orange-striped floats, a white
+  fin with an orange sunburst, a blurred prop disc with an orange
+  spinner, and the altitude-scaled water shadow kept. Drawn ~30%
+  larger; banking/pitch behaviour unchanged.
+
+All four screenshots were re-captured from the Pages build (fresh
+staging path shotstage6, same scenes/seeds and crop box) and verified
+visually — new plane unmistakable in every frame, sea calm behind it:
+
+- screenshots/1-cover.jpg — 1078×606, 85,724 bytes
+- screenshots/2-rings.jpg — 1078×606, 88,218 bytes
+- screenshots/3-approach.jpg — 1078×606, 79,889 bytes
+- screenshots/4-title.jpg — 1078×606, 101,584 bytes
+
 ## Files
 
 - main.ts (95 lines) — hand-in entrypoint
