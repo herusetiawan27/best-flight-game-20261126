@@ -55,10 +55,12 @@ export function setupShotScene(game, scene) {
     game.score = 480;
     game.elapsed = 38;
   } else if (scene === 'approach') {
-    // On final: south of the runway, aligned with its centreline,
-    // low and slowing, autopilot flies the descent to the threshold.
+    // On final: south of the runway, low and slowing, autopilot flies the
+    // descent to the threshold. The plane starts ~45 m east of the
+    // centreline so the strip reads ahead beside the nose (not hidden
+    // behind the fuselage) while the autopilot corrects back onto it.
     const ap = world.runway.approach;
-    plane.x = ap.x;
+    plane.x = ap.x + 45;
     plane.z = ap.z + 60;
     plane.y = ap.y + 8;
     plane.heading = 0;
