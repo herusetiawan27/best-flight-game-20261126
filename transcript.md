@@ -68,10 +68,24 @@ paths; the staging copies were removed afterwards.)
 Final screenshots (all ≤ 256 KiB, verified visually: aircraft in frame,
 instruments lit, ring/runway ahead, HUD altitude/speed/heading readable):
 
-- screenshots/1-cover.jpg — 1078×606, 93,917 bytes (cover)
-- screenshots/2-rings.jpg — 1078×606, 97,355 bytes
-- screenshots/3-approach.jpg — 1078×606, 82,714 bytes
-- screenshots/4-title.jpg — 1078×606, 112,992 bytes
+- screenshots/1-cover.jpg — 1078×606, 94,936 bytes (cover)
+- screenshots/2-rings.jpg — 1078×606, 98,280 bytes
+- screenshots/3-approach.jpg — 1078×606, 83,985 bytes
+- screenshots/4-title.jpg — 1078×606, 113,461 bytes
+
+## Aircraft art pass (26 Nov, later)
+
+At the user's request ("perbaiki pesawatnya, buat yg lebih bagus") the
+seaplane's rendering in game/src/render.js was reworked — visuals only,
+no gameplay/physics/HUD changes, same shot scenes and seeds: shaded
+fuselage with sun-side warmth and panel lines, glossy gradient canopy
+with sun glint, spinning prop disc with blade streaks and spinner,
+two-panel wing with dihedral, leading-edge sheen, aileron/flap lines,
+gold tips and glowing nav lights (red left / green right), wing and
+float struts, red-striped floats, gold fin with a red band and antenna
+wire, exhaust stubs, and a soft water shadow that shrinks and fades
+with altitude. All four screenshots were then re-captured from the
+Pages build (fresh staging path, same crop box) and verified visually.
 
 ## Files
 
