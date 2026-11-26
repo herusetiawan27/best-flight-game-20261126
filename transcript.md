@@ -127,6 +127,49 @@ visually — new plane unmistakable in every frame, sea calm behind it:
 - screenshots/3-approach.jpg — 1078×606, 79,889 bytes
 - screenshots/4-title.jpg — 1078×606, 101,584 bytes
 
+## Revision round 4 — frozen sea, smaller plane, slimmer rear (26 Nov, later)
+
+The user played the round-3 build and complained again: the sea STILL
+moved (only the plane should move), and the plane was too big with too
+bulky a rear. Both fixed:
+
+- **Sea frozen completely** (render.js drawSea): the water layer is now
+  painted exactly once into an offscreen canvas and blitted every
+  frame. The painting is a pure function of screen position — it reads
+  no time, no frame count, no plane state, no camera — so frame-to-
+  frame change in the water is impossible by construction. Verified
+  with a real rasterizer (node-canvas): two frames rendered at wildly
+  different sim times and plane states (t=0 at the start vs t=999.7,
+  banked at altitude) have a sea-region diff of exactly **0 pixels**,
+  both for the sea layer alone and for the sky+sea background stack.
+  What still changes on the water is only what should: the projected
+  world objects (islands, boats, lighthouse, rings, runway) and the
+  plane's own shadow. The calm round-3 look (fixed gradient, haze
+  band, sun-glitter wedge, static sparkle) is unchanged.
+- **Plane smaller, rear slimmed** (render.js drawPlane): overall scale
+  back from 1.3 to 1.0 (round 3's enlargement read as too big), and
+  the rear made distinctly lighter — the tail cone below the wing
+  tapers in sooner and ends higher (tip at y 35.5 instead of 42.5,
+  ±9 wide instead of ±12.5), the horizontal stabilizer span is cut
+  from ±47 to ±34, the fin is smaller (top -85 instead of -96), the
+  floats are slightly slimmer, and the water shadow is re-tuned to
+  the smaller airframe. The teal + white + orange design language,
+  glossy canopy, prop disc, nav lights and the banking/pitch
+  behaviour are all kept. Flight model untouched; the headless
+  autopilot re-verification still completes 12/12 rings plus a
+  successful landing (score 2654, 62 sim-seconds — identical to
+  round 3).
+
+All four screenshots were re-captured from the Pages build (fresh
+staging path shotstage7, same scenes/seeds and crop box) and verified
+visually — plane clearly smaller with a tapered rear in every frame,
+sea calm and static-looking, HUD and scenes unchanged:
+
+- screenshots/1-cover.jpg — 1078×606, 91,448 bytes
+- screenshots/2-rings.jpg — 1078×606, 94,675 bytes
+- screenshots/3-approach.jpg — 1078×606, 84,949 bytes
+- screenshots/4-title.jpg — 1078×606, 109,950 bytes
+
 ## Files
 
 - main.ts (95 lines) — hand-in entrypoint
