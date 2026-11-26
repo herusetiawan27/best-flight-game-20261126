@@ -1,0 +1,8 @@
+best-flight-game-20261126-0057-kit/
+kit.tar.gz
+transcripts.tar.gz
+muse-usage.jsonl
+out/
+*.log
+comp.json
+.makefun/
