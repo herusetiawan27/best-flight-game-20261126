@@ -246,3 +246,7 @@ next-ring chevron, birds, a cliff islet and a sailboat:
 - README.md, LICENSE (MIT), .gitignore
 
 Not done here (parent's step): bundle, kit check, submit.
+
+## Sea freeze fix
+
+The user played the overhauled build and reported the sea still moving with the plane on the Y axis. Root cause: the water's glitter and the golden sun-reflection path were still projected through the chase camera every frame, so they slid across the surface whenever the plane pitched, climbed, or descended — the painted water layer underneath was already frozen, but the projected sparkle on top of it was not. Fix (commit 2e46c8e, game/src/render.js only): the glitter and the sun path are baked into the pre-painted screen-space sea layer, and the horizon is locked to row 360, so nothing in the water layer reads the camera, the plane state, or the clock. Verification: frame-diff across climb, dive, and bank states showed 0 differing sea pixels. The 4 screenshots were re-captured from the fixed build (shotstage9 staging, removed after capture).
