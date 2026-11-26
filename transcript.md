@@ -1,0 +1,84 @@
+# Build note — Golden Strait Run (best-flight-game-20261126-0057)
+
+Entry built 26 November 2026 (WITA) for the make.fun bounty
+best-flight-game-20261126-0057 ($500, free entry, top 50 paid). Anchor:
+makefun anchor a2cf6faa196dc094d84501450b87435850abd28e round 34287143.
+
+## Concept
+
+"Golden Strait Run" — an original golden-hour seaplane game: thread 12
+glowing golden rings over a tropical archipelago strait (turquoise sea,
+green islands with beaches, a lighthouse, boats), then land gently on the
+coastal runway. Deliberately NOT a volcano/Merapi theme — a competitor
+(@nofrizal, "Merapi Run") already works that ground.
+
+## Tech
+
+- Canvas 2D pseudo-3D: own perspective projection (camera basis from
+  heading/pitch) + painter's-algorithm sorting. Fixed 1280×720 canvas,
+  CSS-scaled with aspect preserved. No WebGL, no external assets, no
+  network — runs offline from static files.
+- Chase view with a banking seaplane drawn from polygons; lit instrument
+  cluster (artificial horizon with pitch ladder, altimeter, airspeed,
+  throttle bar, vertical speed, stall warning) and a HUD with altitude,
+  speed, heading, score, timer and rings left.
+- Flight model: throttle/lift/gravity with a forgiving stall; landing is
+  judged on speed, sink rate and alignment. Title screen, ring course,
+  runway finale, success / game-over screens, R restart, P pause, M mute.
+- Controls: arrows + WASD, mouse steering, Enter/click to start.
+- Sound: WebAudio synth only (engine hum tracking throttle, ring chime,
+  success arpeggio, crash thud); starts on first user gesture.
+- Code layout: game/index.html + ES modules in game/src/ (main, render,
+  world, input, audio, shots, random, config) — all written fresh for this
+  entry. An autopilot proof flew the unmodified game logic end-to-end:
+  12/12 rings and a successful landing.
+
+## main.ts
+
+Written fresh (Node 22, stdlib only): copies game/ and screenshots/ into
+MAKEFUN_OUTPUT_DIR (default /output) and writes dossier.json there via
+buildDossier from vendor/makefun-game.ts (vendored byte-identical,
+sha256 dc67187521b24025ff952f8c231485a6eb92d6d71d29edd2a08154ffb4376129)
+with caps text_max_bytes 163840, screenshots {max 4, max_bytes 262144},
+game_max_files 993, game_max_bytes 50331648, game_path_max_bytes 1000.
+A later revision added a preflight check (screenshot count/byte caps and
+game file-count cap fail fast with a plain message). Tested in a sandbox
+(positive + oversized-screenshot negative test) and against the real repo:
+13 files copied, dossier.json 578,541 bytes, schema makefun/dossier/v1,
+4 images, cover index 0.
+
+## Screenshots
+
+Deterministic scenes are built into the game: ?shot=<scene>&seed=<n>
+builds the world from a seeded RNG, runs a fixed-step (dt = 1/60)
+autopilot simulation, renders one frame and sets window.__shotReady.
+Scenes: cover 100 steps (seed 7), rings 240 (seed 3), approach 430
+(seed 5), title 90 (seed 1).
+
+Capture method: GitHub Pages was enabled on this repo (master branch,
+root), and the Simular Box Chrome loaded the Pages URLs; the rendered
+frames were photographed from the real browser and cropped to the canvas
+(1078×606). Two framing fixes were made along the way: the approach scene
+first stopped too far out, then sat dead on the centreline where the
+fuselage hides the strip — it now starts ~90 m east of the centreline so
+the autopilot's intercept leaves the runway readable beside the nose.
+(Browser module caching was bypassed by capturing from fresh staging
+paths; the staging copies were removed afterwards.)
+
+Final screenshots (all ≤ 256 KiB, verified visually: aircraft in frame,
+instruments lit, ring/runway ahead, HUD altitude/speed/heading readable):
+
+- screenshots/1-cover.jpg — 1078×606, 93,917 bytes (cover)
+- screenshots/2-rings.jpg — 1078×606, 97,355 bytes
+- screenshots/3-approach.jpg — 1078×606, 82,714 bytes
+- screenshots/4-title.jpg — 1078×606, 112,992 bytes
+
+## Files
+
+- main.ts (95 lines) — hand-in entrypoint
+- vendor/makefun-game.ts — dossier library, unchanged
+- game/index.html + game/src/*.js (8 modules, 59,566 bytes total)
+- screenshots/1-cover.jpg … 4-title.jpg
+- README.md, LICENSE (MIT), .gitignore
+
+Not done here (parent's step): bundle, kit check, submit.
